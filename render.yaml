@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: crewai-api
+    env: python
+    repo: https://github.com/jayusctrojan/crewai.git
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PORT
+        value: 8000
