@@ -11,3 +11,4 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 .DS_Store
+crew-api.sh
