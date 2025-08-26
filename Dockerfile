@@ -15,5 +15,5 @@ COPY . .
 
 EXPOSE 8000
 
-# Debug version to see what's happening
-CMD ["sh", "-c", "echo 'Container starting...' && echo 'Testing import...' && python -c 'import main; print(\"Import successful\")' && echo 'Starting uvicorn...' && uvicorn main:app --host 0.0.0.0 --port 8000"]
+# Use Python directly instead of uvicorn command
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
