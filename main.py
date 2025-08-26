@@ -1,6 +1,7 @@
 import sys
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
@@ -14,6 +15,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 logger.info("=== Starting CrewAI Application ===")
+
+# Authentication setup
+security = HTTPBearer()
+
+def verify_api_key(authorization: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify the API key in the Authorization header"""
+    api_key = os.getenv("API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="API key not configured")
+    
+    if authorization.credentials != api_key:
+        raise HTTPException(
+            status_code=401, 
+            detail="Invalid API key"
+        )
+    return authorization.credentials
 
 try:
     logger.info("Loading environment variables...")
@@ -34,12 +51,12 @@ try:
 
     @app.get("/")
     async def root():
-        return {"message": "CrewAI API is running on Render!"}
+        return {"message": "CrewAI API is running on Render!", "note": "Authentication required for /run-crew"}
 
     @app.post("/run-crew")
-    async def run_crew(request: TaskRequest):
+    async def run_crew(request: TaskRequest, api_key: str = Depends(verify_api_key)):
         try:
-            logger.info(f"Creating agent with role: {request.role}")
+            logger.info(f"Authenticated request - Creating agent with role: {request.role}")
             
             # Create agent
             agent = Agent(
@@ -94,6 +111,7 @@ if __name__ == "__main__":
         
         logger.info(f"Starting uvicorn server on port {port}")
         logger.info(f"OpenAI API Key exists: {bool(os.getenv('OPENAI_API_KEY'))}")
+        logger.info(f"API Key exists: {bool(os.getenv('API_KEY'))}")
         
         uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
     except Exception as e:
