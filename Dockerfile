@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -16,5 +15,5 @@ COPY . .
 
 EXPOSE 8000
 
-# Simple, direct command
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Debug version to see what's happening
+CMD ["sh", "-c", "echo 'Container starting...' && echo 'Testing import...' && python -c 'import main; print(\"Import successful\")' && echo 'Starting uvicorn...' && uvicorn main:app --host 0.0.0.0 --port 8000"]
