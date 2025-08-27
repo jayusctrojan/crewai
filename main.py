@@ -170,6 +170,8 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
         """)
     return templates.TemplateResponse("studio.html", {"request": request})
 
+print("Studio UI endpoint defined")
+
 # Studio API endpoint for visual interface (with fallback)
 @app.post("/studio/run")
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
