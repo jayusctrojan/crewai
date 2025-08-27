@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>CrewAI Studio</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="studio-container">
+        <header class="studio-header">
+            <h1><i class="fas fa-robot"></i> CrewAI Studio</h1>
+            <p>Visual AI Agent Builder</p>
+        </header>
+
+        <main class="studio-main">
+            <div class="studio-form">
+                <form id="studioForm">
+                    <div class="form-section">
+                        <h2><i class="fas fa-user-tie"></i> Agent Configuration</h2>
+                        
+                        <div class="form-group">
+                            <label for="agentName">Agent Name</label>
+                            <input type="text" id="agentName" name="agentName" placeholder="e.g., Marketing Specialist, Data Analyst" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="agentRole">Agent Role</label>
+                            <input type="text" id="agentRole" name="agentRole" placeholder="e.g., Senior Marketing Manager" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="agentGoal">Agent Goal</label>
+                            <textarea id="agentGoal" name="agentGoal" placeholder="Define what this agent aims to achieve..." required></textarea>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <h2><i class="fas fa-tasks"></i> Task Configuration</h2>
+                        
+                        <div class="form-group">
+                            <label for="taskDescription">Task Description</label>
+                            <textarea id="taskDescription" name="taskDescription" placeholder="Describe the specific task to be performed..." required></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="expectedOutput">Expected Output</label>
+                            <textarea id="expectedOutput" name="expectedOutput" placeholder="Describe what the expected result should look like..." required></textarea>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <h2><i class="fas fa-brain"></i> Model Selection</h2>
+                        
+                        <div class="form-group">
+                            <label for="llmModel">Language Model</label>
+                            <select id="llmModel" name="llmModel">
+                                <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Cost-effective)</option>
+                                <option value="gpt-4">GPT-4 (High Quality)</option>
+                                <option value="gpt-4-turbo">GPT-4 Turbo (Latest & Fast)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" id="runButton" class="run-button">
+                            <i class="fas fa-play"></i> Run Agent
+                        </button>
+                        <button type="button" id="clearButton" class="clear-button">
+                            <i class="fas fa-eraser"></i> Clear Form
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="studio-output">
+                <div class="output-header">
+                    <h2><i class="fas fa-terminal"></i> Agent Output</h2>
+                    <div class="status-indicator" id="statusIndicator">
+                        <i class="fas fa-circle"></i> Ready
+                    </div>
+                </div>
+                
+                <div class="output-content" id="outputContent">
+                    <div class="placeholder">
+                        <i class="fas fa-robot"></i>
+                        <p>Configure your agent above and click "Run Agent" to see the results here.</p>
+                    </div>
+                </div>
+
+                <div class="execution-info" id="executionInfo" style="display: none;">
+                    <h3>Execution Details</h3>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <strong>Agent:</strong> <span id="infoAgentName">-</span>
+                        </div>
+                        <div class="info-item">
+                            <strong>Model:</strong> <span id="infoModel">-</span>
+                        </div>
+                        <div class="info-item">
+                            <strong>Status:</strong> <span id="infoStatus">-</span>
+                        </div>
+                        <div class="info-item">
+                            <strong>Duration:</strong> <span id="infoDuration">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="studio-footer">
+            <p><i class="fas fa-code"></i> Powered by CrewAI & FastAPI | <a href="/">API Docs</a></p>
+        </footer>
+    </div>
+
+    <div id="loadingModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="spinner"></div>
+            <p>Agent is working...</p>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

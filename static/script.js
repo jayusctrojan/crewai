@@ -1,6 +1,8 @@
-// CrewAI Studio JavaScript
+// CrewAI Studio JavaScript - CSP Safe Version
 
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('CrewAI Studio initializing...');
+    
     // Get DOM elements
     const form = document.getElementById('studioForm');
     const runButton = document.getElementById('runButton');
@@ -9,6 +11,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const statusIndicator = document.getElementById('statusIndicator');
     const executionInfo = document.getElementById('executionInfo');
     const loadingModal = document.getElementById('loadingModal');
+
+    // Check if all elements exist
+    if (!form || !runButton || !outputContent) {
+        console.error('Required DOM elements not found');
+        return;
+    }
+
+    console.log('DOM elements found successfully');
 
     // Form elements
     const agentName = document.getElementById('agentName');
@@ -205,11 +215,6 @@ document.addEventListener('DOMContentLoaded', function() {
         `;
         executionInfo.style.display = 'none';
         updateStatus('', 'Ready');
-        
-        // Clear localStorage
-        formInputs.forEach(input => {
-            localStorage.removeItem(input.id);
-        });
     }
 
     function formatDuration(ms) {
@@ -242,11 +247,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 expectedOutput.value = 'A professional, empathetic response with solution and compensation offer';
                 break;
         }
-        
-        // Trigger save
-        formInputs.forEach(input => {
-            localStorage.setItem(input.id, input.value);
-        });
     }
 
     // Expose preset function globally for potential future use
