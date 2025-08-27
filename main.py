@@ -315,6 +315,36 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
 
 print("Studio/run endpoint defined successfully")
 
+# Performance endpoint with authentication
+@app.get("/studio/performance/{agent_name}")
+async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentials = Depends(security)):
+    """Get performance metrics for a specific agent - PROTECTED"""
+    # Manual auth check
+    correct_username = secrets.compare_digest(
+        credentials.username, 
+        os.getenv("STUDIO_USERNAME", "admin")
+    )
+    correct_password = secrets.compare_digest(
+        credentials.password, 
+        os.getenv("STUDIO_PASSWORD", "changeme123")
+    )
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    
+    memory_manager = get_memory_manager()
+    if not memory_manager:
+        return {"error": "Memory manager not available"}
+    
+    performance = memory_manager.get_agent_performance(agent_name)
+    return performance
+
+print("Performance endpoint defined")
+
 print("Studio endpoints defined")
 
 # Root endpoint
