@@ -5,3 +5,5 @@ python-dotenv
 jinja2
 python-multipart
 supabase
+prometheus-client
+psutil
