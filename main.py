@@ -173,6 +173,8 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 print("Studio UI endpoint defined")
 
 # Studio API endpoint for visual interface (with fallback)
+print("About to define studio/run endpoint...")
+
 @app.post("/studio/run")
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
     """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
