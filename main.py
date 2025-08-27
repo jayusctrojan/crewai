@@ -67,6 +67,8 @@ class CourseKnowledgeManager:
     """Manages course knowledge storage and retrieval via Pinecone"""
     
     def __init__(self):
+        self.available = False  # Initialize available attribute first
+        
         if not PINECONE_AVAILABLE:
             print("WARNING: Pinecone not available, knowledge features disabled")
             return
@@ -1230,7 +1232,7 @@ if __name__ == "__main__":
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
         print(f"Pinecone available: {PINECONE_AVAILABLE}")
-        print(f"Knowledge manager ready: {knowledge_manager and knowledge_manager.available if knowledge_manager else False}")
+        print(f"Knowledge manager ready: {getattr(knowledge_manager, 'available', False) if knowledge_manager else False}")
         print(f"📊 Dashboard will be available at: http://localhost:{port}/dashboard")
         print(f"📈 Metrics endpoint: http://localhost:{port}/metrics")
         print(f"📚 Knowledge search: http://localhost:{port}/knowledge/search")
