@@ -172,29 +172,67 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 
 print("Studio UI endpoint defined")
 
-# Studio API endpoint for visual interface (with fallback)
+# FULL Studio API endpoint with memory integration and manual auth
 print("About to define studio/run endpoint...")
 
 @app.post("/studio/run")
-async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
-    """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
+async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(security)):
+    """Full endpoint with memory integration and manual auth checking"""
+    # Manual authentication check instead of using verify_studio_access dependency
+    correct_username = secrets.compare_digest(
+        credentials.username, 
+        os.getenv("STUDIO_USERNAME", "admin")
+    )
+    correct_password = secrets.compare_digest(
+        credentials.password, 
+        os.getenv("STUDIO_PASSWORD", "changeme123")
+    )
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     start_time = time.time()
     session_id = str(uuid.uuid4())
-    # memory_manager = get_memory_manager()  # Commented out temporarily
+    memory_manager = get_memory_manager() if MEMORY_AVAILABLE else None
     
     try:
-        # Get appropriate LLM for the task (basic fallback)
+        # Save task start to memory
+        if memory_manager:
+            memory_manager.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=f"Starting task: {request.task_description}",
+                memory_type="task_start",
+                session_id=session_id
+            )
+
+        # Get previous knowledge for this agent type
+        agent_knowledge = []
+        if memory_manager:
+            knowledge = memory_manager.get_agent_knowledge(request.agent_name)
+            agent_knowledge = [k["knowledge_content"] for k in knowledge[:3]]
+
+        # Enhanced backstory with memory
+        backstory = f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}"
+        if agent_knowledge:
+            backstory += f"\n\nYour previous knowledge includes:\n" + "\n".join(f"- {k}" for k in agent_knowledge)
+
+        # Get appropriate LLM for the task
         from crewai.llm import LLM
         llm = LLM(
             model=request.llm_model,
             api_key=os.getenv("OPENAI_API_KEY")
         )
         
-        # Create agent with basic backstory (memory integration commented out)
+        # Create agent with enhanced backstory
         agent = Agent(
             role=request.agent_role,
             goal=request.agent_goal,
-            backstory=f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}",
+            backstory=backstory,
             llm=llm,
             verbose=True
         )
@@ -216,6 +254,30 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         result = crew.kickoff()
         execution_time = int((time.time() - start_time) * 1000)
 
+        # Save results to memory
+        if memory_manager:
+            # Save task result
+            memory_manager.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=str(result),
+                memory_type="task_result",
+                session_id=session_id,
+                metadata={"task": request.task_description, "model": request.llm_model}
+            )
+            
+            # Log execution
+            memory_manager.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output=str(result),
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=True
+            )
+
         return {
             "success": True,
             "result": str(result),
@@ -227,21 +289,64 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
                 "expected_output_met": True,
                 "execution_time_ms": execution_time,
                 "session_id": session_id,
-                "memory_saved": False
+                "memory_saved": memory_manager is not None
             }
         }
         
     except Exception as e:
+        execution_time = int((time.time() - start_time) * 1000)
+        
+        # Log error to memory
+        if memory_manager:
+            memory_manager.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,  
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output="",
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=False,
+                error_message=str(e)
+            )
+
         logger.error(f"Error in studio run: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing studio crew: {str(e)}")
 
-# Remove the performance endpoint temp
-# @app.get("/studio/performance/{agent_name}")  
-# async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
-#     """Get performance metrics for a specific agent"""
-#     memory_manager = get_memory_manager()
-#     if not memory_manager:
-#         return {"error": "Memory manager not available"}
-#     
-#     performance = memory_manager.get_agent_performance(agent_name)
-#     return performance
+print("Studio/run endpoint defined successfully")
+
+print("Studio endpoints defined")
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "message": "CrewAI Studio API is running on Render!",
+        "status": "healthy",
+        "endpoints": {
+            "health": "/health",
+            "run_crew": "/run-crew", 
+            "studio_ui": "/studio",
+            "studio_api": "/studio/run",
+            "api_docs": "/docs"
+        },
+        "features": {
+            "visual_studio": templates is not None,
+            "memory_system": MEMORY_AVAILABLE,
+            "docker_deployment": True
+        }
+    }
+
+if __name__ == "__main__":
+    try:
+        print("Starting CrewAI Studio API...")
+        port = int(os.getenv("PORT", 8000))
+        print(f"Port: {port}")
+        print(f"Memory available: {MEMORY_AVAILABLE}")
+        print("Initializing uvicorn...")
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    except Exception as e:
+        print(f"STARTUP ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
