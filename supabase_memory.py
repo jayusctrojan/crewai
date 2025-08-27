@@ -175,11 +175,17 @@ class AgentMemoryManager:
     def get_agent_performance(self, agent_name: str, days: int = 7) -> Dict[str, Any]:
         """Get agent performance metrics for the last N days"""
         try:
+            # Calculate the date in Python instead of using PostgreSQL interval
+            from datetime import datetime, timedelta
+            
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            cutoff_date_str = cutoff_date.isoformat()
+            
             # Get recent executions
             result = self.supabase.table("task_executions")\
                 .select("*")\
                 .eq("agent_name", agent_name)\
-                .gte("created_at", f"now() - interval '{days} days'")\
+                .gte("created_at", cutoff_date_str)\
                 .execute()
 
             executions = result.data
