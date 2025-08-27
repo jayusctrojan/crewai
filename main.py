@@ -13,6 +13,9 @@ import secrets
 # Import your existing CrewAI functionality
 from crewai import Agent, Task, Crew
 # from llm_router import get_llm_for_task  # Commented out for now
+from supabase_memory import get_memory_manager
+import time
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -147,6 +150,36 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
     """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
     try:
+# Studio API endpoint for visual interface (with fallback)
+@app.post("/studio/run")
+async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
+    """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
+    start_time = time.time()
+    session_id = str(uuid.uuid4())
+    memory_manager = get_memory_manager()
+    
+    try:
+        # Save task start to memory
+        if memory_manager:
+            memory_manager.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=f"Starting task: {request.task_description}",
+                memory_type="task_start",
+                session_id=session_id
+            )
+
+        # Get previous knowledge for this agent type
+        agent_knowledge = []
+        if memory_manager:
+            knowledge = memory_manager.get_agent_knowledge(request.agent_name)
+            agent_knowledge = [k["knowledge_content"] for k in knowledge[:3]]  # Top 3 pieces
+
+        # Enhanced backstory with memory
+        backstory = f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}"
+        if agent_knowledge:
+            backstory += f"\n\nYour previous knowledge includes:\n" + "\n".join(f"- {k}" for k in agent_knowledge)
+
         # Get appropriate LLM for the task (basic fallback)
         from crewai.llm import LLM
         llm = LLM(
@@ -154,11 +187,11 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
             api_key=os.getenv("OPENAI_API_KEY")
         )
         
-        # Create agent with Studio parameters
+        # Create agent with enhanced backstory
         agent = Agent(
             role=request.agent_role,
             goal=request.agent_goal,
-            backstory=f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}",
+            backstory=backstory,
             llm=llm,
             verbose=True
         )
@@ -178,7 +211,32 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         )
         
         result = crew.kickoff()
-        
+        execution_time = int((time.time() - start_time) * 1000)  # Convert to milliseconds
+
+        # Save results to memory
+        if memory_manager:
+            # Save task result
+            memory_manager.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=str(result),
+                memory_type="task_result",
+                session_id=session_id,
+                metadata={"task": request.task_description, "model": request.llm_model}
+            )
+            
+            # Log execution
+            memory_manager.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output=str(result),
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=True
+            )
+
         return {
             "success": True,
             "result": str(result),
@@ -187,13 +245,43 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
             "model_used": request.llm_model,
             "execution_details": {
                 "task_completed": True,
-                "expected_output_met": True
+                "expected_output_met": True,
+                "execution_time_ms": execution_time,
+                "session_id": session_id,
+                "memory_saved": memory_manager is not None
             }
         }
         
     except Exception as e:
+        execution_time = int((time.time() - start_time) * 1000)
+        
+        # Log error to memory
+        if memory_manager:
+            memory_manager.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,  
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output="",
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=False,
+                error_message=str(e)
+            )
+
         logger.error(f"Error in studio run: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing studio crew: {str(e)}")
+
+# New endpoint: Get agent performance
+@app.get("/studio/performance/{agent_name}")
+async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
+    """Get performance metrics for a specific agent"""
+    memory_manager = get_memory_manager()
+    if not memory_manager:
+        return {"error": "Memory manager not available"}
+    
+    performance = memory_manager.get_agent_performance(agent_name)
+    return performance
 
 # Root endpoint
 @app.get("/")
