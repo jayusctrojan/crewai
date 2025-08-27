@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Create necessary directories for Studio UI (safe addition)
+RUN mkdir -p static templates studio
+
 EXPOSE 8000
 
 CMD ["python", "main.py"]
