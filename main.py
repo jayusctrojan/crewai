@@ -147,6 +147,8 @@ async def run_crew(request: CrewRequest):
         logger.error(f"Error in run_crew: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing crew: {str(e)}")
 
+print("Basic crew endpoint defined")
+
 # CrewAI Studio UI endpoint (only if templates are available)
 @app.get("/studio", response_class=HTMLResponse)
 async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
