@@ -32,6 +32,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CrewAI Studio API", version="1.0.0")
+print("FastAPI app created successfully")
 
 # Security setup for Studio access
 security = HTTPBasic()
