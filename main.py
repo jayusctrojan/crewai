@@ -98,6 +98,8 @@ class StudioRequest(BaseModel):
 async def health_check():
     return {"status": "healthy", "service": "CrewAI Studio API"}
 
+print("Health endpoint defined")
+
 # Original CrewAI endpoint (keep for backward compatibility)
 @app.post("/run-crew")
 async def run_crew(request: CrewRequest):
