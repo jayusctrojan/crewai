@@ -149,11 +149,6 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 @app.post("/studio/run")
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
     """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
-    try:
-# Studio API endpoint for visual interface (with fallback)
-@app.post("/studio/run")
-async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
-    """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
     start_time = time.time()
     session_id = str(uuid.uuid4())
     memory_manager = get_memory_manager()
@@ -282,20 +277,3 @@ async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentia
     
     performance = memory_manager.get_agent_performance(agent_name)
     return performance
-
-# Root endpoint
-@app.get("/")
-async def root():
-    return {
-        "message": "CrewAI Studio API is running on Render!",
-        "endpoints": {
-            "health": "/health",
-            "run_crew": "/run-crew",
-            "studio_ui": "/studio",
-            "studio_api": "/studio/run"
-        }
-    }
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
