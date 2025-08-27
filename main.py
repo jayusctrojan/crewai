@@ -235,7 +235,7 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         logger.error(f"Error in studio run: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing studio crew: {str(e)}")
 
-# Remove the performance endpoint temporarily
+# Remove the performance endpoint temp
 # @app.get("/studio/performance/{agent_name}")  
 # async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
 #     """Get performance metrics for a specific agent"""
