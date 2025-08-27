@@ -1,12 +1,14 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 import os
 import uvicorn
 from typing import Optional
 import logging
+import secrets
 
 # Import your existing CrewAI functionality
 from crewai import Agent, Task, Crew
@@ -17,6 +19,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CrewAI Studio API", version="1.0.0")
+
+# Security setup for Studio access
+security = HTTPBasic()
+
+def verify_studio_access(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify Studio access with username/password"""
+    correct_username = secrets.compare_digest(
+        credentials.username, 
+        os.getenv("STUDIO_USERNAME", "admin")
+    )
+    correct_password = secrets.compare_digest(
+        credentials.password, 
+        os.getenv("STUDIO_PASSWORD", "changeme123")
+    )
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials
 
 # Mount static files and templates for Studio UI (only if directories exist)
 try:
@@ -99,8 +123,8 @@ async def run_crew(request: CrewRequest):
 
 # CrewAI Studio UI endpoint (only if templates are available)
 @app.get("/studio", response_class=HTMLResponse)
-async def studio_ui(request: Request):
-    """Serve the CrewAI Studio visual interface"""
+async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
+    """Serve the CrewAI Studio visual interface - PROTECTED"""
     if templates is None:
         return HTMLResponse("""
         <html>
@@ -120,8 +144,8 @@ async def studio_ui(request: Request):
 
 # Studio API endpoint for visual interface (with fallback)
 @app.post("/studio/run")
-async def run_studio_crew(request: StudioRequest):
-    """Enhanced endpoint for Studio UI with more detailed configuration"""
+async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
+    """Enhanced endpoint for Studio UI with more detailed configuration - PROTECTED"""
     try:
         # Get appropriate LLM for the task (basic fallback)
         from crewai.llm import LLM
