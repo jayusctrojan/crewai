@@ -10,7 +10,7 @@ import logging
 
 # Import your existing CrewAI functionality
 from crewai import Agent, Task, Crew
-from llm_router import get_llm_for_task
+# from llm_router import get_llm_for_task  # Commented out for now
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -54,8 +54,12 @@ async def health_check():
 @app.post("/run-crew")
 async def run_crew(request: CrewRequest):
     try:
-        # Get appropriate LLM for the task
-        llm = get_llm_for_task(request.llm_model)
+        # Get appropriate LLM for the task (basic fallback)
+        from crewai.llm import LLM
+        llm = LLM(
+            model=request.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
         
         # Create agent
         agent = Agent(
@@ -119,16 +123,12 @@ async def studio_ui(request: Request):
 async def run_studio_crew(request: StudioRequest):
     """Enhanced endpoint for Studio UI with more detailed configuration"""
     try:
-        # Get appropriate LLM for the task (with fallback if llm_router not available)
-        try:
-            llm = get_llm_for_task(request.llm_model)
-        except ImportError:
-            logger.warning("llm_router not available, using basic OpenAI configuration")
-            from crewai.llm import LLM
-            llm = LLM(
-                model=request.llm_model,
-                api_key=os.getenv("OPENAI_API_KEY")
-            )
+        # Get appropriate LLM for the task (basic fallback)
+        from crewai.llm import LLM
+        llm = LLM(
+            model=request.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
         
         # Create agent with Studio parameters
         agent = Agent(
