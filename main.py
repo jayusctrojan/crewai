@@ -58,13 +58,23 @@ def verify_studio_access(credentials: HTTPBasicCredentials = Depends(security)):
 
 # Mount static files and templates for Studio UI (only if directories exist)
 try:
+    print("Attempting to mount static files...")
     if os.path.exists("static"):
+        print("Static directory found, mounting...")
         app.mount("/static", StaticFiles(directory="static"), name="static")
-    if os.path.exists("templates"):
-        templates = Jinja2Templates(directory="templates")
+        print("Static files mounted successfully")
     else:
+        print("Static directory not found")
+        
+    if os.path.exists("templates"):
+        print("Templates directory found, creating Jinja2Templates...")
+        templates = Jinja2Templates(directory="templates")
+        print("Templates initialized successfully")
+    else:
+        print("Templates directory not found")
         templates = None
 except Exception as e:
+    print(f"ERROR mounting static files or templates: {e}")
     logger.warning(f"Could not mount static files or templates: {e}")
     templates = None
 
