@@ -6,7 +6,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 import os
 import uvicorn
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import logging
 import secrets
 
@@ -32,6 +32,16 @@ import psutil
 from datetime import datetime, timedelta
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+# ADD PINECONE IMPORTS
+try:
+    from pinecone import Pinecone, ServerlessSpec
+    import openai
+    PINECONE_AVAILABLE = True
+    print("SUCCESS: Pinecone imported successfully")
+except Exception as e:
+    print(f"WARNING: Could not import Pinecone: {e}")
+    PINECONE_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,6 +61,184 @@ system_cpu = Gauge('crewai_cpu_usage_percent', 'CPU usage percentage')
 # Track service start time
 start_time = time.time()
 print("Monitoring metrics initialized successfully")
+
+# ADD PINECONE KNOWLEDGE MANAGER
+class CourseKnowledgeManager:
+    """Manages course knowledge storage and retrieval via Pinecone"""
+    
+    def __init__(self):
+        if not PINECONE_AVAILABLE:
+            print("WARNING: Pinecone not available, knowledge features disabled")
+            return
+            
+        try:
+            # Initialize Pinecone
+            self.pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+            self.index_name = "crewai-course-knowledge"
+            self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            # Create index if it doesn't exist
+            self._ensure_index_exists()
+            self.index = self.pc.Index(self.index_name)
+            self.available = True
+            print("Pinecone CourseKnowledgeManager initialized successfully")
+        except Exception as e:
+            print(f"ERROR initializing Pinecone: {e}")
+            self.available = False
+    
+    def _ensure_index_exists(self):
+        """Create Pinecone index if it doesn't exist"""
+        try:
+            existing_indexes = [index.name for index in self.pc.list_indexes()]
+            
+            if self.index_name not in existing_indexes:
+                self.pc.create_index(
+                    name=self.index_name,
+                    dimension=1536,  # OpenAI ada-002 embedding dimension
+                    metric="cosine",
+                    spec=ServerlessSpec(
+                        cloud="aws",
+                        region="us-east-1"
+                    )
+                )
+                print(f"Created Pinecone index: {self.index_name}")
+                time.sleep(10)  # Wait for index to be ready
+        except Exception as e:
+            print(f"Error ensuring index exists: {e}")
+            raise
+    
+    def embed_text(self, text: str) -> List[float]:
+        """Generate embeddings using OpenAI"""
+        if not self.available:
+            return []
+        try:
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-ada-002",
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Error generating embedding: {e}")
+            return []
+    
+    def store_course_content(self, 
+                           content: str, 
+                           course_name: str,
+                           section: str,
+                           metadata: Dict[str, Any] = None) -> str:
+        """Store course content in Pinecone"""
+        if not self.available:
+            return "pinecone_unavailable"
+            
+        try:
+            # Generate embedding
+            embedding = self.embed_text(content)
+            if not embedding:
+                return "embedding_failed"
+            
+            # Prepare metadata
+            vector_metadata = {
+                "course_name": course_name,
+                "section": section,
+                "content": content[:1000],  # Store partial content in metadata
+                "content_length": len(content),
+                "timestamp": str(datetime.now())
+            }
+            
+            if metadata:
+                vector_metadata.update(metadata)
+            
+            # Generate unique ID
+            vector_id = f"{course_name}_{section}_{hash(content[:100])}"
+            
+            # Store in Pinecone
+            self.index.upsert([(vector_id, embedding, vector_metadata)])
+            
+            return vector_id
+        except Exception as e:
+            print(f"Error storing course content: {e}")
+            return "storage_failed"
+    
+    def search_knowledge(self, 
+                        query: str, 
+                        course_filter: str = None,
+                        top_k: int = 5) -> List[Dict[str, Any]]:
+        """Search for relevant course knowledge"""
+        if not self.available:
+            return []
+            
+        try:
+            # Generate query embedding
+            query_embedding = self.embed_text(query)
+            if not query_embedding:
+                return []
+            
+            # Build filter
+            filter_dict = {}
+            if course_filter:
+                filter_dict["course_name"] = course_filter
+            
+            # Search Pinecone
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=top_k,
+                include_metadata=True,
+                filter=filter_dict if filter_dict else None
+            )
+            
+            # Format results
+            knowledge_chunks = []
+            for match in results.matches:
+                knowledge_chunks.append({
+                    "content": match.metadata.get("content", ""),
+                    "course": match.metadata.get("course_name", ""),
+                    "section": match.metadata.get("section", ""),
+                    "relevance_score": match.score,
+                    "id": match.id
+                })
+            
+            return knowledge_chunks
+        except Exception as e:
+            print(f"Error searching knowledge: {e}")
+            return []
+    
+    def get_agent_context(self, 
+                         task_description: str, 
+                         agent_role: str,
+                         max_context: int = 3) -> str:
+        """Get relevant context for CrewAI agents"""
+        if not self.available:
+            return ""
+            
+        try:
+            # Create search query combining task and role
+            search_query = f"{agent_role}: {task_description}"
+            
+            # Search for relevant knowledge
+            knowledge = self.search_knowledge(search_query, top_k=max_context)
+            
+            if not knowledge:
+                return ""
+            
+            # Format context for agent
+            context_parts = []
+            for item in knowledge:
+                context_parts.append(
+                    f"[{item['course']} - {item['section']}]: {item['content']}"
+                )
+            
+            return "\n\nRelevant Course Knowledge:\n" + "\n\n".join(context_parts)
+        except Exception as e:
+            print(f"Error getting agent context: {e}")
+            return ""
+
+# Initialize global knowledge manager
+try:
+    knowledge_manager = CourseKnowledgeManager()
+    print("Global knowledge manager initialized")
+except Exception as e:
+    print(f"Failed to initialize knowledge manager: {e}")
+    knowledge_manager = None
 
 # ADD HELPER FUNCTIONS
 def record_task_metrics(task_type: str, role: str, status: str, duration: float, endpoint: str = "unknown"):
@@ -125,9 +313,23 @@ class StudioRequest(BaseModel):
     expected_output: str
     llm_model: Optional[str] = "gpt-3.5-turbo"
 
-# Health check endpoint - ENHANCED WITH MONITORING
+# NEW PINECONE MODELS
+class CourseUploadRequest(BaseModel):
+    course_name: str
+    file_name: str
+    content: str
+    section: Optional[str] = None
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str
+    course_filter: Optional[str] = None
+    limit: Optional[int] = 5
+
+# Health check endpoint - ENHANCED WITH MONITORING AND PINECONE STATUS
 @app.get("/health")
 async def health_check():
+    pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
+    
     return {
         "status": "healthy", 
         "service": "CrewAI Studio API",
@@ -138,7 +340,8 @@ async def health_check():
         "features": {
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
-            "monitoring_dashboard": True
+            "monitoring_dashboard": True,
+            "pinecone_knowledge": pinecone_status
         }
     }
 
@@ -209,6 +412,177 @@ async def run_crew(request: CrewRequest):
 
 print("Basic crew endpoint defined")
 
+# NEW KNOWLEDGE-ENHANCED CREWAI ENDPOINT
+@app.post("/crew/enhanced")
+async def run_enhanced_crew(request: CrewRequest):
+    """CrewAI endpoint enhanced with course knowledge from Pinecone"""
+    request_start_time = time.time()
+    active_tasks.inc()
+    
+    try:
+        # Get knowledge context if available
+        knowledge_context = ""
+        if knowledge_manager and knowledge_manager.available:
+            knowledge_context = knowledge_manager.get_agent_context(
+                request.description, 
+                request.role,
+                max_context=3
+            )
+        
+        # Enhanced backstory with knowledge
+        backstory = f"You are a {request.role} focused on {request.goal}"
+        if knowledge_context:
+            backstory += f"\n\nYou have access to relevant course materials and knowledge base. Use this information to provide accurate, detailed responses.\n{knowledge_context}"
+        
+        # Get appropriate LLM for the task
+        from crewai.llm import LLM
+        llm = LLM(
+            model=request.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
+        
+        # Create knowledge-enhanced agent
+        agent = Agent(
+            role=request.role,
+            goal=request.goal,
+            backstory=backstory,
+            llm=llm,
+            verbose=True
+        )
+        
+        # Create task
+        task = Task(
+            description=request.description,
+            agent=agent,
+            expected_output="A comprehensive response using available course knowledge and expertise"
+        )
+        
+        # Create and run crew
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            verbose=True
+        )
+        
+        result = crew.kickoff()
+        
+        # Record success metrics
+        duration = time.time() - request_start_time
+        record_task_metrics(request.description[:50], request.role, 'success', duration, 'crew-enhanced')
+        active_tasks.dec()
+        
+        return {
+            "success": True,
+            "result": str(result),
+            "agent_role": request.role,
+            "model_used": request.llm_model,
+            "execution_time": round(duration, 2),
+            "enhanced_with_knowledge": bool(knowledge_context),
+            "knowledge_available": knowledge_manager and knowledge_manager.available
+        }
+        
+    except Exception as e:
+        # Record error metrics
+        duration = time.time() - request_start_time
+        record_task_metrics(request.description[:50], request.role, 'error', duration, 'crew-enhanced')
+        active_tasks.dec()
+        
+        logger.error(f"Error in run_enhanced_crew: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error executing enhanced crew: {str(e)}")
+
+# PINECONE KNOWLEDGE ENDPOINTS
+@app.post("/knowledge/upload")
+async def upload_course_content(request: CourseUploadRequest):
+    """Upload course content to Pinecone knowledge base"""
+    if not knowledge_manager or not knowledge_manager.available:
+        raise HTTPException(status_code=503, detail="Pinecone knowledge system unavailable")
+    
+    try:
+        # Process content into chunks
+        chunk_size = 1000
+        words = request.content.split()
+        chunks = []
+        
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            chunks.append(chunk)
+        
+        stored_ids = []
+        for i, chunk in enumerate(chunks):
+            section = request.section or f"{request.file_name}_part_{i+1}"
+            
+            vector_id = knowledge_manager.store_course_content(
+                content=chunk,
+                course_name=request.course_name,
+                section=section,
+                metadata={
+                    "file_name": request.file_name,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks)
+                }
+            )
+            stored_ids.append(vector_id)
+        
+        return {
+            "success": True,
+            "course_name": request.course_name,
+            "file_name": request.file_name,
+            "chunks_stored": len(stored_ids),
+            "vector_ids": stored_ids
+        }
+        
+    except Exception as e:
+        logger.error(f"Error uploading course content: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error uploading content: {str(e)}")
+
+@app.post("/knowledge/search")
+async def search_knowledge(request: KnowledgeSearchRequest):
+    """Search the knowledge base for relevant information"""
+    if not knowledge_manager or not knowledge_manager.available:
+        raise HTTPException(status_code=503, detail="Pinecone knowledge system unavailable")
+    
+    try:
+        results = knowledge_manager.search_knowledge(
+            query=request.query,
+            course_filter=request.course_filter,
+            top_k=request.limit
+        )
+        
+        return {
+            "success": True,
+            "query": request.query,
+            "results_count": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error searching knowledge: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error searching knowledge: {str(e)}")
+
+@app.get("/knowledge/search")
+async def search_knowledge_get(query: str, course: Optional[str] = None, limit: int = 5):
+    """GET endpoint for knowledge search (for easy browser testing)"""
+    if not knowledge_manager or not knowledge_manager.available:
+        return {"error": "Pinecone knowledge system unavailable"}
+    
+    try:
+        results = knowledge_manager.search_knowledge(
+            query=query,
+            course_filter=course,
+            top_k=limit
+        )
+        
+        return {
+            "success": True,
+            "query": query,
+            "results_count": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error searching knowledge: {str(e)}")
+        return {"error": f"Error searching knowledge: {str(e)}"}
+
 # CrewAI Studio UI endpoint (only if templates are available)
 @app.get("/studio", response_class=HTMLResponse)
 async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depends(verify_studio_access)):
@@ -223,6 +597,7 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
                 <ul>
                     <li><a href="/health">Health Check</a></li>
                     <li><a href="/run-crew">Run Crew API</a></li>
+                    <li><a href="/crew/enhanced">Enhanced Crew with Knowledge</a></li>
                     <li><a href="/dashboard">Monitoring Dashboard</a></li>
                     <li><a href="/docs">API Documentation</a></li>
                 </ul>
@@ -233,12 +608,12 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 
 print("Studio UI endpoint defined")
 
-# FULL Studio API endpoint with memory integration and manual auth - ENHANCED WITH MONITORING
+# FULL Studio API endpoint with memory integration and manual auth - ENHANCED WITH MONITORING AND KNOWLEDGE
 print("About to define studio/run endpoint...")
 
 @app.post("/studio/run")
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(security)):
-    """Full endpoint with memory integration and manual auth checking - ENHANCED WITH MONITORING"""
+    """Full endpoint with memory integration, knowledge enhancement, and manual auth checking"""
     # Manual authentication check instead of using verify_studio_access dependency
     correct_username = secrets.compare_digest(
         credentials.username, 
@@ -259,12 +634,12 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
     start_time_request = time.time()
     active_tasks.inc()  # Increment active task counter
     session_id = str(uuid.uuid4())
-    memory_manager = get_memory_manager() if MEMORY_AVAILABLE else None
+    memory_manager_instance = get_memory_manager() if MEMORY_AVAILABLE else None
     
     try:
         # Save task start to memory
-        if memory_manager:
-            memory_manager.save_agent_memory(
+        if memory_manager_instance:
+            memory_manager_instance.save_agent_memory(
                 agent_name=request.agent_name,
                 agent_role=request.agent_role,
                 content=f"Starting task: {request.task_description}",
@@ -274,14 +649,27 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
 
         # Get previous knowledge for this agent type
         agent_knowledge = []
-        if memory_manager:
-            knowledge = memory_manager.get_agent_knowledge(request.agent_name)
+        if memory_manager_instance:
+            knowledge = memory_manager_instance.get_agent_knowledge(request.agent_name)
             agent_knowledge = [k["knowledge_content"] for k in knowledge[:3]]
 
-        # Enhanced backstory with memory
+        # Get course knowledge context
+        course_knowledge_context = ""
+        if knowledge_manager and knowledge_manager.available:
+            course_knowledge_context = knowledge_manager.get_agent_context(
+                request.task_description,
+                request.agent_role,
+                max_context=3
+            )
+
+        # Enhanced backstory with both memory and course knowledge
         backstory = f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}"
+        
         if agent_knowledge:
             backstory += f"\n\nYour previous knowledge includes:\n" + "\n".join(f"- {k}" for k in agent_knowledge)
+        
+        if course_knowledge_context:
+            backstory += f"\n\nYou have access to comprehensive course materials and knowledge base:\n{course_knowledge_context}"
 
         # Get appropriate LLM for the task
         from crewai.llm import LLM
@@ -317,9 +705,9 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         execution_time = int((time.time() - start_time_request) * 1000)
 
         # Save results to memory
-        if memory_manager:
+        if memory_manager_instance:
             # Save task result
-            memory_manager.save_agent_memory(
+            memory_manager_instance.save_agent_memory(
                 agent_name=request.agent_name,
                 agent_role=request.agent_role,
                 content=str(result),
@@ -329,7 +717,7 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
             )
             
             # Log execution
-            memory_manager.log_task_execution(
+            memory_manager_instance.log_task_execution(
                 agent_name=request.agent_name,
                 agent_role=request.agent_role,
                 task_description=request.task_description,
@@ -356,7 +744,8 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
                 "expected_output_met": True,
                 "execution_time_ms": execution_time,
                 "session_id": session_id,
-                "memory_saved": memory_manager is not None
+                "memory_saved": memory_manager_instance is not None,
+                "knowledge_enhanced": bool(course_knowledge_context)
             }
         }
         
@@ -364,8 +753,8 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         execution_time = int((time.time() - start_time_request) * 1000)
         
         # Log error to memory
-        if memory_manager:
-            memory_manager.log_task_execution(
+        if memory_manager_instance:
+            memory_manager_instance.log_task_execution(
                 agent_name=request.agent_name,
                 agent_role=request.agent_role,  
                 task_description=request.task_description,
@@ -408,18 +797,18 @@ async def get_agent_performance(agent_name: str, credentials: HTTPBasicCredentia
             headers={"WWW-Authenticate": "Basic"},
         )
     
-    memory_manager = get_memory_manager()
-    if not memory_manager:
+    memory_manager_instance = get_memory_manager()
+    if not memory_manager_instance:
         return {"error": "Memory manager not available"}
     
-    performance = memory_manager.get_agent_performance(agent_name)
+    performance = memory_manager_instance.get_agent_performance(agent_name)
     return performance
 
 print("Performance endpoint defined")
 
 print("Studio endpoints defined")
 
-# ADD MONITORING DASHBOARD ENDPOINTS
+# ADD MONITORING DASHBOARD ENDPOINTS (keeping your existing dashboard code)
 @app.get("/dashboard", response_class=HTMLResponse)
 async def monitoring_dashboard():
     """Monitoring dashboard for CrewAI service - No auth required for monitoring"""
@@ -555,7 +944,7 @@ async def monitoring_dashboard():
     <body>
         <div class="header">
             <h1>🤖 CrewAI Studio Monitoring<span class="status-indicator"></span></h1>
-            <p>Real-time service monitoring and analytics</p>
+            <p>Real-time service monitoring and analytics with knowledge base</p>
         </div>
         
         <div class="container">
@@ -805,15 +1194,20 @@ async def prometheus_metrics():
 
 print("Monitoring dashboard endpoints defined")
 
-# Root endpoint
+# Root endpoint - ENHANCED WITH PINECONE STATUS
 @app.get("/")
 async def root():
+    pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
+    
     return {
-        "message": "CrewAI Studio API is running on Render!",
+        "message": "CrewAI Studio API with Knowledge Base is running on Render!",
         "status": "healthy",
         "endpoints": {
             "health": "/health",
             "run_crew": "/run-crew", 
+            "run_enhanced_crew": "/crew/enhanced",
+            "upload_knowledge": "/knowledge/upload",
+            "search_knowledge": "/knowledge/search",
             "studio_ui": "/studio",
             "studio_api": "/studio/run",
             "monitoring_dashboard": "/dashboard",
@@ -824,18 +1218,22 @@ async def root():
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
             "monitoring_dashboard": True,
+            "pinecone_knowledge": pinecone_status,
             "docker_deployment": True
         }
     }
 
 if __name__ == "__main__":
     try:
-        print("Starting CrewAI Studio API with Monitoring...")
+        print("Starting CrewAI Studio API with Knowledge Base and Monitoring...")
         port = int(os.getenv("PORT", 8000))
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
+        print(f"Pinecone available: {PINECONE_AVAILABLE}")
+        print(f"Knowledge manager ready: {knowledge_manager and knowledge_manager.available if knowledge_manager else False}")
         print(f"📊 Dashboard will be available at: http://localhost:{port}/dashboard")
         print(f"📈 Metrics endpoint: http://localhost:{port}/metrics")
+        print(f"📚 Knowledge search: http://localhost:{port}/knowledge/search")
         print("Initializing uvicorn...")
         uvicorn.run(app, host="0.0.0.0", port=port)
     except Exception as e:

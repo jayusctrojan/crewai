@@ -7,3 +7,5 @@ python-multipart
 supabase
 prometheus-client
 psutil
+pinecone-client
+openai
