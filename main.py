@@ -100,7 +100,7 @@ class CourseKnowledgeManager:
                     metric="cosine",
                     spec=ServerlessSpec(
                         cloud="aws",
-                        region=os.getenv("PINECONE_REGION", "us-west-2")  # Configurable, defaults to West Coast
+                        region="us-east-1"
                     )
                 )
                 print(f"Created Pinecone index: {self.index_name}")
