@@ -42,6 +42,10 @@ except Exception as e:
     print(f"WARNING: Could not import Pinecone: {e}")
     PINECONE_AVAILABLE = False
 
+# ADD LAKERA GUARD IMPORTS
+import requests
+import json
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,6 +65,71 @@ system_cpu = Gauge('crewai_cpu_usage_percent', 'CPU usage percentage')
 # Track service start time
 start_time = time.time()
 print("Monitoring metrics initialized successfully")
+
+# ADD LAKERA GUARD CLASS
+class LakeraGuard:
+    """Lakera Guard integration for AI security"""
+    
+    def __init__(self):
+        self.api_key = os.getenv("LAKERA_API_KEY")
+        self.project_id = os.getenv("LAKERA_PROJECT_ID") 
+        self.base_url = "https://api.lakera.ai/v1/guard"
+        self.available = bool(self.api_key)
+        
+        if self.available:
+            print("SUCCESS: Lakera Guard initialized successfully")
+        else:
+            print("WARNING: Lakera Guard not available - API key missing")
+    
+    def screen_content(self, user_input: str, llm_output: str = None) -> Dict[str, Any]:
+        """Screen content with Lakera Guard for security threats"""
+        if not self.available:
+            return {"flagged": False, "categories": [], "lakera_available": False}
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "input": user_input,
+        }
+        
+        if self.project_id:
+            payload["project_id"] = self.project_id
+            
+        if llm_output:
+            payload["output"] = llm_output
+        
+        try:
+            response = requests.post(self.base_url, headers=headers, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "flagged": result.get("flagged", False),
+                    "categories": result.get("categories", []),
+                    "lakera_available": True,
+                    "response_time": response.elapsed.total_seconds()
+                }
+            else:
+                logger.warning(f"Lakera Guard API returned status {response.status_code}: {response.text}")
+                return {"flagged": False, "categories": [], "lakera_available": False, "error": "API error"}
+                
+        except requests.RequestException as e:
+            logger.error(f"Lakera Guard request failed: {e}")
+            return {"flagged": False, "categories": [], "lakera_available": False, "error": str(e)}
+        except Exception as e:
+            logger.error(f"Lakera Guard error: {e}")
+            return {"flagged": False, "categories": [], "lakera_available": False, "error": str(e)}
+
+# Initialize Lakera Guard
+try:
+    lakera_guard = LakeraGuard()
+    print("Global Lakera Guard initialized")
+except Exception as e:
+    print(f"Failed to initialize Lakera Guard: {e}")
+    lakera_guard = None
 
 # ADD PINECONE KNOWLEDGE MANAGER
 class CourseKnowledgeManager:
@@ -327,10 +396,11 @@ class KnowledgeSearchRequest(BaseModel):
     course_filter: Optional[str] = None
     limit: Optional[int] = 5
 
-# Health check endpoint - ENHANCED WITH MONITORING AND PINECONE STATUS
+# Health check endpoint - ENHANCED WITH MONITORING, PINECONE AND LAKERA STATUS
 @app.get("/health")
 async def health_check():
     pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
+    lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
     
     return {
         "status": "healthy", 
@@ -343,19 +413,33 @@ async def health_check():
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
             "monitoring_dashboard": True,
-            "pinecone_knowledge": pinecone_status
+            "pinecone_knowledge": pinecone_status,
+            "lakera_security": lakera_status
         }
     }
 
 print("Health endpoint defined")
 
-# Original CrewAI endpoint (keep for backward compatibility) - ENHANCED WITH MONITORING
+# Original CrewAI endpoint (keep for backward compatibility) - ENHANCED WITH MONITORING AND LAKERA GUARD
 @app.post("/run-crew")
 async def run_crew(request: CrewRequest):
     request_start_time = time.time()
     active_tasks.inc()  # Increment active task counter
     
     try:
+        # SCREEN INPUT WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.description)
+            
+            if guard_result.get("flagged"):
+                active_tasks.dec()
+                record_task_metrics(request.description[:50], request.role, 'blocked_by_security', 
+                                  time.time() - request_start_time, 'run-crew')
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Content blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
         # Get appropriate LLM for the task (basic fallback)
         from crewai.llm import LLM
         llm = LLM(
@@ -388,6 +472,14 @@ async def run_crew(request: CrewRequest):
         
         result = crew.kickoff()
         
+        # SCREEN OUTPUT WITH LAKERA GUARD
+        output_blocked = False
+        if lakera_guard and lakera_guard.available:
+            output_guard = lakera_guard.screen_content("", str(result))
+            if output_guard.get("flagged"):
+                output_blocked = True
+                result = f"Response blocked by security policy. Detected threats: {output_guard.get('categories', [])}"
+        
         # Record success metrics
         duration = time.time() - request_start_time
         record_task_metrics(request.description[:50], request.role, 'success', duration, 'run-crew')
@@ -398,9 +490,16 @@ async def run_crew(request: CrewRequest):
             "result": str(result),
             "agent_role": request.role,
             "model_used": request.llm_model,
-            "execution_time": round(duration, 2)
+            "execution_time": round(duration, 2),
+            "security_screening": {
+                "input_blocked": False,
+                "output_blocked": output_blocked,
+                "lakera_enabled": lakera_guard and lakera_guard.available
+            }
         }
         
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (like security blocks)
     except Exception as e:
         # Record error metrics
         duration = time.time() - request_start_time
@@ -414,14 +513,27 @@ async def run_crew(request: CrewRequest):
 
 print("Basic crew endpoint defined")
 
-# NEW KNOWLEDGE-ENHANCED CREWAI ENDPOINT
+# NEW KNOWLEDGE-ENHANCED CREWAI ENDPOINT WITH LAKERA GUARD
 @app.post("/crew/enhanced")
 async def run_enhanced_crew(request: CrewRequest):
-    """CrewAI endpoint enhanced with course knowledge from Pinecone"""
+    """CrewAI endpoint enhanced with course knowledge from Pinecone and protected by Lakera Guard"""
     request_start_time = time.time()
     active_tasks.inc()
     
     try:
+        # SCREEN INPUT WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.description)
+            
+            if guard_result.get("flagged"):
+                active_tasks.dec()
+                record_task_metrics(request.description[:50], request.role, 'blocked_by_security', 
+                                  time.time() - request_start_time, 'crew-enhanced')
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Content blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
         # Get knowledge context if available
         knowledge_context = ""
         if knowledge_manager and knowledge_manager.available:
@@ -468,6 +580,14 @@ async def run_enhanced_crew(request: CrewRequest):
         
         result = crew.kickoff()
         
+        # SCREEN OUTPUT WITH LAKERA GUARD
+        output_blocked = False
+        if lakera_guard and lakera_guard.available:
+            output_guard = lakera_guard.screen_content("", str(result))
+            if output_guard.get("flagged"):
+                output_blocked = True
+                result = f"Response blocked by security policy. Detected threats: {output_guard.get('categories', [])}"
+        
         # Record success metrics
         duration = time.time() - request_start_time
         record_task_metrics(request.description[:50], request.role, 'success', duration, 'crew-enhanced')
@@ -480,9 +600,16 @@ async def run_enhanced_crew(request: CrewRequest):
             "model_used": request.llm_model,
             "execution_time": round(duration, 2),
             "enhanced_with_knowledge": bool(knowledge_context),
-            "knowledge_available": knowledge_manager and knowledge_manager.available
+            "knowledge_available": knowledge_manager and knowledge_manager.available,
+            "security_screening": {
+                "input_blocked": False,
+                "output_blocked": output_blocked,
+                "lakera_enabled": lakera_guard and lakera_guard.available
+            }
         }
         
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (like security blocks)
     except Exception as e:
         # Record error metrics
         duration = time.time() - request_start_time
@@ -492,14 +619,24 @@ async def run_enhanced_crew(request: CrewRequest):
         logger.error(f"Error in run_enhanced_crew: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing enhanced crew: {str(e)}")
 
-# PINECONE KNOWLEDGE ENDPOINTS
+# PINECONE KNOWLEDGE ENDPOINTS WITH LAKERA GUARD
 @app.post("/knowledge/upload")
 async def upload_course_content(request: CourseUploadRequest):
-    """Upload course content to Pinecone knowledge base"""
+    """Upload course content to Pinecone knowledge base with security screening"""
     if not knowledge_manager or not knowledge_manager.available:
         raise HTTPException(status_code=503, detail="Pinecone knowledge system unavailable")
     
     try:
+        # SCREEN COURSE CONTENT WITH LAKERA GUARD BEFORE STORAGE
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.content)
+            
+            if guard_result.get("flagged"):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Course content blocked by security policy. Detected threats: {guard_result.get('categories', [])}. Please review and sanitize the content before uploading."
+                )
+        
         # Process content into chunks
         chunk_size = 1000
         words = request.content.split()
@@ -530,20 +667,36 @@ async def upload_course_content(request: CourseUploadRequest):
             "course_name": request.course_name,
             "file_name": request.file_name,
             "chunks_stored": len(stored_ids),
-            "vector_ids": stored_ids
+            "vector_ids": stored_ids,
+            "security_screening": {
+                "content_screened": lakera_guard and lakera_guard.available,
+                "threats_detected": False
+            }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error uploading course content: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading content: {str(e)}")
 
 @app.post("/knowledge/search")
 async def search_knowledge(request: KnowledgeSearchRequest):
-    """Search the knowledge base for relevant information"""
+    """Search the knowledge base for relevant information with security screening"""
     if not knowledge_manager or not knowledge_manager.available:
         raise HTTPException(status_code=503, detail="Pinecone knowledge system unavailable")
     
     try:
+        # SCREEN SEARCH QUERY WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.query)
+            
+            if guard_result.get("flagged"):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Search query blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
         results = knowledge_manager.search_knowledge(
             query=request.query,
             course_filter=request.course_filter,
@@ -554,20 +707,40 @@ async def search_knowledge(request: KnowledgeSearchRequest):
             "success": True,
             "query": request.query,
             "results_count": len(results),
-            "results": results
+            "results": results,
+            "security_screening": {
+                "query_screened": lakera_guard and lakera_guard.available,
+                "threats_detected": False
+            }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching knowledge: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error searching knowledge: {str(e)}")
 
 @app.get("/knowledge/search")
 async def search_knowledge_get(query: str, course: Optional[str] = None, limit: int = 5):
-    """GET endpoint for knowledge search (for easy browser testing)"""
+    """GET endpoint for knowledge search (for easy browser testing) with security screening"""
     if not knowledge_manager or not knowledge_manager.available:
         return {"error": "Pinecone knowledge system unavailable"}
     
     try:
+        # SCREEN SEARCH QUERY WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(query)
+            
+            if guard_result.get("flagged"):
+                return {
+                    "error": f"Search query blocked by security policy. Detected threats: {guard_result.get('categories', [])}",
+                    "security_screening": {
+                        "query_screened": True,
+                        "threats_detected": True,
+                        "categories": guard_result.get('categories', [])
+                    }
+                }
+        
         results = knowledge_manager.search_knowledge(
             query=query,
             course_filter=course,
@@ -578,7 +751,11 @@ async def search_knowledge_get(query: str, course: Optional[str] = None, limit: 
             "success": True,
             "query": query,
             "results_count": len(results),
-            "results": results
+            "results": results,
+            "security_screening": {
+                "query_screened": lakera_guard and lakera_guard.available,
+                "threats_detected": False
+            }
         }
         
     except Exception as e:
@@ -610,12 +787,12 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
 
 print("Studio UI endpoint defined")
 
-# FULL Studio API endpoint with memory integration and manual auth - ENHANCED WITH MONITORING AND KNOWLEDGE
+# FULL Studio API endpoint with memory integration, knowledge enhancement, and Lakera Guard protection
 print("About to define studio/run endpoint...")
 
 @app.post("/studio/run")
 async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(security)):
-    """Full endpoint with memory integration, knowledge enhancement, and manual auth checking"""
+    """Full endpoint with memory integration, knowledge enhancement, Lakera Guard security, and manual auth checking"""
     # Manual authentication check instead of using verify_studio_access dependency
     correct_username = secrets.compare_digest(
         credentials.username, 
@@ -639,6 +816,19 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
     memory_manager_instance = get_memory_manager() if MEMORY_AVAILABLE else None
     
     try:
+        # SCREEN INPUT WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.task_description)
+            
+            if guard_result.get("flagged"):
+                active_tasks.dec()
+                record_task_metrics(request.task_description[:50], request.agent_role, 'blocked_by_security', 
+                                  time.time() - start_time_request, 'studio-run')
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Task description blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
         # Save task start to memory
         if memory_manager_instance:
             memory_manager_instance.save_agent_memory(
@@ -706,6 +896,14 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
         result = crew.kickoff()
         execution_time = int((time.time() - start_time_request) * 1000)
 
+        # SCREEN OUTPUT WITH LAKERA GUARD
+        output_blocked = False
+        if lakera_guard and lakera_guard.available:
+            output_guard = lakera_guard.screen_content("", str(result))
+            if output_guard.get("flagged"):
+                output_blocked = True
+                result = f"Response blocked by security policy. Detected threats: {output_guard.get('categories', [])}"
+
         # Save results to memory
         if memory_manager_instance:
             # Save task result
@@ -748,9 +946,16 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
                 "session_id": session_id,
                 "memory_saved": memory_manager_instance is not None,
                 "knowledge_enhanced": bool(course_knowledge_context)
+            },
+            "security_screening": {
+                "input_blocked": False,
+                "output_blocked": output_blocked,
+                "lakera_enabled": lakera_guard and lakera_guard.available
             }
         }
         
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (like security blocks)
     except Exception as e:
         execution_time = int((time.time() - start_time_request) * 1000)
         
@@ -946,7 +1151,7 @@ async def monitoring_dashboard():
     <body>
         <div class="header">
             <h1>🤖 CrewAI Studio Monitoring<span class="status-indicator"></span></h1>
-            <p>Real-time service monitoring and analytics with knowledge base</p>
+            <p>Real-time service monitoring and analytics with knowledge base and security</p>
         </div>
         
         <div class="container">
@@ -1196,13 +1401,14 @@ async def prometheus_metrics():
 
 print("Monitoring dashboard endpoints defined")
 
-# Root endpoint - ENHANCED WITH PINECONE STATUS
+# Root endpoint - ENHANCED WITH PINECONE AND LAKERA STATUS
 @app.get("/")
 async def root():
     pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
+    lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
     
     return {
-        "message": "CrewAI Studio API with Knowledge Base is running on Render!",
+        "message": "CrewAI Studio API with Knowledge Base and Security is running on Render!",
         "status": "healthy",
         "endpoints": {
             "health": "/health",
@@ -1221,18 +1427,20 @@ async def root():
             "memory_system": MEMORY_AVAILABLE,
             "monitoring_dashboard": True,
             "pinecone_knowledge": pinecone_status,
+            "lakera_security": lakera_status,
             "docker_deployment": True
         }
     }
 
 if __name__ == "__main__":
     try:
-        print("Starting CrewAI Studio API with Knowledge Base and Monitoring...")
+        print("Starting CrewAI Studio API with Knowledge Base, Security, and Monitoring...")
         port = int(os.getenv("PORT", 8000))
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
         print(f"Pinecone available: {PINECONE_AVAILABLE}")
         print(f"Knowledge manager ready: {getattr(knowledge_manager, 'available', False) if knowledge_manager else False}")
+        print(f"Lakera Guard ready: {getattr(lakera_guard, 'available', False) if lakera_guard else False}")
         print(f"📊 Dashboard will be available at: http://localhost:{port}/dashboard")
         print(f"📈 Metrics endpoint: http://localhost:{port}/metrics")
         print(f"📚 Knowledge search: http://localhost:{port}/knowledge/search")

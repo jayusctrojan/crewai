@@ -9,3 +9,4 @@ prometheus-client
 psutil
 pinecone
 openai
+requests
