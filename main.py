@@ -46,6 +46,10 @@ except Exception as e:
 import requests
 import json
 
+# ADD PLUGIN SYSTEM IMPORTS
+import importlib
+from pathlib import Path
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -311,6 +315,60 @@ except Exception as e:
     print(f"Failed to initialize knowledge manager: {e}")
     knowledge_manager = None
 
+# ADD PLUGIN AGENT LOADER CLASS
+class AgentLoader:
+    """Dynamic agent plugin loader"""
+    
+    def __init__(self):
+        self.agents = {}
+        self.load_all_agents()
+    
+    def load_all_agents(self):
+        """Auto-discover and load all agent plugins"""
+        agents_dir = Path("plugins/agents")
+        
+        # Create plugins directory if it doesn't exist
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not agents_dir.exists():
+            print("Plugins directory not found, creating...")
+            return
+            
+        for file in agents_dir.glob("*.py"):
+            if file.name.startswith("__"):
+                continue
+                
+            module_name = f"plugins.agents.{file.stem}"
+            try:
+                module = importlib.import_module(module_name)
+                if hasattr(module, 'AGENT_CLASS') and hasattr(module, 'AGENT_NAME'):
+                    self.agents[module.AGENT_NAME] = module.AGENT_CLASS
+                    print(f"Loaded agent: {module.AGENT_NAME}")
+            except Exception as e:
+                print(f"Failed to load agent from {file}: {e}")
+    
+    def get_agent_class(self, name: str):
+        """Get agent class by name"""
+        return self.agents.get(name)
+    
+    def list_agents(self):
+        """List all available agents"""
+        return list(self.agents.keys())
+    
+    def reload_agents(self):
+        """Reload all agents (for development)"""
+        self.agents.clear()
+        self.load_all_agents()
+
+# Initialize Agent Loader
+print("Initializing Agent Loader...")
+try:
+    agent_loader = AgentLoader()
+    print(f"Agent loader initialized with {len(agent_loader.agents)} agents")
+except Exception as e:
+    print(f"Failed to initialize agent loader: {e}")
+    agent_loader = None
+
 # ADD HELPER FUNCTIONS
 def record_task_metrics(task_type: str, role: str, status: str, duration: float, endpoint: str = "unknown"):
     """Record task execution metrics"""
@@ -396,6 +454,13 @@ class KnowledgeSearchRequest(BaseModel):
     course_filter: Optional[str] = None
     limit: Optional[int] = 5
 
+# ADD PLUGIN AGENT MODEL
+class AgentExecuteRequest(BaseModel):
+    task_description: str
+    context_data: Optional[Dict[str, Any]] = None
+    source_info: Optional[Dict[str, Any]] = None
+    llm_model: Optional[str] = "gpt-4"
+
 # Health check endpoint - ENHANCED WITH MONITORING, PINECONE AND LAKERA STATUS
 @app.get("/health")
 async def health_check():
@@ -414,11 +479,165 @@ async def health_check():
             "memory_system": MEMORY_AVAILABLE,
             "monitoring_dashboard": True,
             "pinecone_knowledge": pinecone_status,
-            "lakera_security": lakera_status
+            "lakera_security": lakera_status,
+            "plugin_agents": len(agent_loader.agents) if agent_loader else 0
         }
     }
 
 print("Health endpoint defined")
+
+# ADD PLUGIN AGENT ENDPOINTS
+@app.get("/agents/list")
+async def list_available_agents():
+    """List all available agent plugins"""
+    if not agent_loader:
+        raise HTTPException(status_code=503, detail="Agent loader not available")
+    
+    return {
+        "success": True,
+        "agents": agent_loader.list_agents(),
+        "total_agents": len(agent_loader.agents)
+    }
+
+@app.post("/agents/reload")
+async def reload_agents():
+    """Reload all agent plugins (for development)"""
+    if not agent_loader:
+        raise HTTPException(status_code=503, detail="Agent loader not available")
+    
+    try:
+        agent_loader.reload_agents()
+        return {
+            "success": True,
+            "message": "Agents reloaded successfully",
+            "loaded_agents": agent_loader.list_agents()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload agents: {str(e)}")
+
+@app.post("/agents/{agent_name}/execute")
+async def execute_dynamic_agent(agent_name: str, request: AgentExecuteRequest):
+    """Execute any agent by name - uses all your existing infrastructure"""
+    request_start_time = time.time()
+    active_tasks.inc()
+    
+    try:
+        # Check if agent exists
+        if not agent_loader:
+            raise HTTPException(status_code=503, detail="Agent loader not available")
+            
+        agent_class = agent_loader.get_agent_class(agent_name)
+        if not agent_class:
+            available_agents = agent_loader.list_agents()
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Agent '{agent_name}' not found. Available agents: {available_agents}"
+            )
+        
+        # Use your existing Lakera Guard security screening
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.task_description)
+            
+            if guard_result.get("flagged"):
+                active_tasks.dec()
+                record_task_metrics(agent_name, agent_name, 'blocked_by_security', 
+                                  time.time() - request_start_time, f'agent-{agent_name}')
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Task blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
+        # Get knowledge context using your existing system
+        knowledge_context = ""
+        if knowledge_manager and knowledge_manager.available:
+            knowledge_context = knowledge_manager.get_agent_context(
+                request.task_description,
+                agent_name,
+                max_context=3
+            )
+        
+        # Create agent using your existing LLM setup
+        from crewai.llm import LLM
+        llm = LLM(
+            model=request.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
+        
+        # Create agent instance
+        agent = agent_class.create_agent(
+            llm=llm,
+            knowledge_context=knowledge_context
+        )
+        
+        # Create tasks
+        tasks = agent_class.create_tasks(agent, {
+            "task_description": request.task_description,
+            "context_data": request.context_data,
+            "source_info": request.source_info
+        })
+        
+        # Execute with Crew
+        crew = Crew(
+            agents=[agent],
+            tasks=tasks,
+            verbose=True,
+            memory=True
+        )
+        
+        result = crew.kickoff()
+        
+        # Screen output with your existing Lakera Guard
+        output_blocked = False
+        if lakera_guard and lakera_guard.available:
+            output_guard = lakera_guard.screen_content("", str(result))
+            if output_guard.get("flagged"):
+                output_blocked = True
+                result = f"Response blocked by security policy. Detected threats: {output_guard.get('categories', [])}"
+        
+        # Store in your existing Pinecone knowledge base
+        if knowledge_manager and knowledge_manager.available and not output_blocked:
+            source_file = request.source_info.get("filename") if request.source_info else "unknown"
+            course_name = request.source_info.get("courseName") if request.source_info else "Agent Results"
+            
+            knowledge_manager.store_course_content(
+                content=str(result),
+                course_name=course_name,
+                section=f"agent_{agent_name}_results",
+                metadata={
+                    "agent_name": agent_name,
+                    "task_type": "agent_execution",
+                    "source_file": source_file
+                }
+            )
+        
+        # Record metrics using your existing system
+        duration = time.time() - request_start_time
+        record_task_metrics(agent_name, agent_name, 'success', duration, f'agent-{agent_name}')
+        active_tasks.dec()
+        
+        return {
+            "success": True,
+            "result": str(result),
+            "agent_name": agent_name,
+            "model_used": request.llm_model,
+            "execution_time": round(duration, 2),
+            "enhanced_with_knowledge": bool(knowledge_context),
+            "security_screening": {
+                "input_blocked": False,
+                "output_blocked": output_blocked,
+                "lakera_enabled": lakera_guard and lakera_guard.available
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        duration = time.time() - request_start_time
+        record_task_metrics(agent_name, agent_name, 'error', duration, f'agent-{agent_name}')
+        active_tasks.dec()
+        
+        logger.error(f"Error executing agent {agent_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
 
 # Original CrewAI endpoint (keep for backward compatibility) - ENHANCED WITH MONITORING AND LAKERA GUARD
 @app.post("/run-crew")
@@ -777,6 +996,7 @@ async def studio_ui(request: Request, credentials: HTTPBasicCredentials = Depend
                     <li><a href="/health">Health Check</a></li>
                     <li><a href="/run-crew">Run Crew API</a></li>
                     <li><a href="/crew/enhanced">Enhanced Crew with Knowledge</a></li>
+                    <li><a href="/agents/list">List Plugin Agents</a></li>
                     <li><a href="/dashboard">Monitoring Dashboard</a></li>
                     <li><a href="/docs">API Documentation</a></li>
                 </ul>
@@ -1150,7 +1370,7 @@ async def monitoring_dashboard():
     </head>
     <body>
         <div class="header">
-            <h1>🤖 CrewAI Studio Monitoring<span class="status-indicator"></span></h1>
+            <h1>CrewAI Studio Monitoring<span class="status-indicator"></span></h1>
             <p>Real-time service monitoring and analytics with knowledge base and security</p>
         </div>
         
@@ -1416,6 +1636,9 @@ async def root():
             "run_enhanced_crew": "/crew/enhanced",
             "upload_knowledge": "/knowledge/upload",
             "search_knowledge": "/knowledge/search",
+            "list_agents": "/agents/list",
+            "execute_agent": "/agents/{agent_name}/execute",
+            "reload_agents": "/agents/reload",
             "studio_ui": "/studio",
             "studio_api": "/studio/run",
             "monitoring_dashboard": "/dashboard",
@@ -1428,22 +1651,25 @@ async def root():
             "monitoring_dashboard": True,
             "pinecone_knowledge": pinecone_status,
             "lakera_security": lakera_status,
+            "plugin_agents": len(agent_loader.agents) if agent_loader else 0,
             "docker_deployment": True
         }
     }
 
 if __name__ == "__main__":
     try:
-        print("Starting CrewAI Studio API with Knowledge Base, Security, and Monitoring...")
+        print("Starting CrewAI Studio API with Knowledge Base, Security, and Plugin Agents...")
         port = int(os.getenv("PORT", 8000))
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
         print(f"Pinecone available: {PINECONE_AVAILABLE}")
         print(f"Knowledge manager ready: {getattr(knowledge_manager, 'available', False) if knowledge_manager else False}")
         print(f"Lakera Guard ready: {getattr(lakera_guard, 'available', False) if lakera_guard else False}")
-        print(f"📊 Dashboard will be available at: http://localhost:{port}/dashboard")
-        print(f"📈 Metrics endpoint: http://localhost:{port}/metrics")
-        print(f"📚 Knowledge search: http://localhost:{port}/knowledge/search")
+        print(f"Plugin agents loaded: {len(agent_loader.agents) if agent_loader else 0}")
+        print(f"Dashboard will be available at: http://localhost:{port}/dashboard")
+        print(f"Metrics endpoint: http://localhost:{port}/metrics")
+        print(f"Knowledge search: http://localhost:{port}/knowledge/search")
+        print(f"Plugin agents: http://localhost:{port}/agents/list")
         print("Initializing uvicorn...")
         uvicorn.run(app, host="0.0.0.0", port=port)
     except Exception as e:
