@@ -5,6 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -18,5 +19,5 @@ RUN mkdir -p static templates studio
 
 EXPOSE 8000
 
-# Use main.py directly - it now has Archon integration built-in
+# Use main.py directly - it now has Real Archon integration built-in
 CMD ["python", "main.py"]
