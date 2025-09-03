@@ -16,8 +16,7 @@ COPY . .
 # Create necessary directories for Studio UI (safe addition)
 RUN mkdir -p static templates studio
 
-# Expose both ports - 8000 for CrewAI API and 8501 for Archon Streamlit
-EXPOSE 8000 8501
+EXPOSE 8000
 
-# Use the new multi-service startup script
-CMD ["python", "startup.py"]
+# Back to the original working command
+CMD ["python", "main.py"]
