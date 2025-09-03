@@ -30,7 +30,7 @@ try:
     REAL_ARCHON_AVAILABLE = True
     print("SUCCESS: Real Archon integration imported successfully")
 except Exception as e:
-    print(f"WARNING: Could not import Real Archon integration: {e}")
+    print(f"ERROR: Could not import Real Archon integration: {e}")
     REAL_ARCHON_AVAILABLE = False
 
 import time
@@ -62,7 +62,155 @@ if REAL_ARCHON_AVAILABLE:
         print(f"Failed to activate Real Archon integration: {e}")
         archon_integrator = None
 else:
-    print("Real Archon integration not available")
+    print("❌ Real Archon integration not available - check import errors")
+
+# ADD FALLBACK ARCHON ENDPOINT IF REAL ARCHON FAILED
+if not archon_integrator:
+    @app.get("/archon", response_class=HTMLResponse)
+    async def archon_fallback():
+        """Fallback when Real Archon integration fails"""
+        return HTMLResponse(content=f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🏛️ Archon Setup Required</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+        }}
+        .container {{
+            background: rgba(255, 255, 255, 0.1);
+            padding: 40px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }}
+        .btn {{
+            background: #4CAF50;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px;
+        }}
+        .error {{
+            background: rgba(244, 67, 54, 0.2);
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border: 1px solid #f44336;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏛️ Archon Setup Required</h1>
+        <div class="error">
+            <p><strong>Real Archon integration failed to load.</strong></p>
+            <p>This could be due to missing dependencies or import errors.</p>
+        </div>
+        
+        <p>The Real Archon system needs to be set up before you can use it.</p>
+        
+        <h3>🔧 Setup Steps:</h3>
+        <ol style="text-align: left; max-width: 500px; margin: 0 auto;">
+            <li>POST request to <code>/archon/setup</code> to clone the repository</li>
+            <li>POST request to <code>/archon/start</code> to start the service</li>
+            <li>Visit <code>/archon</code> to access the Real Archon interface</li>
+        </ol>
+        
+        <div style="margin-top: 30px;">
+            <button class="btn" onclick="setupArchon()">🔧 Setup Archon</button>
+            <button class="btn" onclick="checkStatus()">📊 Check Status</button>
+        </div>
+        
+        <div id="status" style="margin-top: 20px;"></div>
+        
+        <div style="margin-top: 30px; font-size: 0.9em; opacity: 0.8;">
+            <p>Real Archon Repository: <a href="https://github.com/coleam00/Archon" style="color: #81C784;">https://github.com/coleam00/Archon</a></p>
+            <p>Version: v6-tool-library-integration</p>
+        </div>
+    </div>
+    
+    <script>
+        async function setupArchon() {{
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<p>🔄 Setting up Archon...</p>';
+            
+            try {{
+                const response = await fetch('/archon/setup', {{ method: 'POST' }});
+                const result = await response.json();
+                
+                if (result.success) {{
+                    statusDiv.innerHTML = '<p style="color: #4CAF50;">✅ Archon setup completed!</p>';
+                    setTimeout(() => {{
+                        startArchon();
+                    }}, 2000);
+                }} else {{
+                    statusDiv.innerHTML = '<p style="color: #f44336;">❌ Setup failed. Check logs.</p>';
+                }}
+            }} catch (error) {{
+                statusDiv.innerHTML = '<p style="color: #f44336;">❌ Setup request failed: ' + error.message + '</p>';
+            }}
+        }}
+        
+        async function startArchon() {{
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<p>🚀 Starting Archon service...</p>';
+            
+            try {{
+                const response = await fetch('/archon/start', {{ method: 'POST' }});
+                const result = await response.json();
+                
+                if (result.success) {{
+                    statusDiv.innerHTML = '<p style="color: #4CAF50;">✅ Archon started! Redirecting to interface...</p>';
+                    setTimeout(() => {{
+                        window.location.reload();
+                    }}, 3000);
+                }} else {{
+                    statusDiv.innerHTML = '<p style="color: #f44336;">❌ Start failed. Check logs.</p>';
+                }}
+            }} catch (error) {{
+                statusDiv.innerHTML = '<p style="color: #f44336;">❌ Start request failed: ' + error.message + '</p>';
+            }}
+        }}
+        
+        async function checkStatus() {{
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<p>📊 Checking status...</p>';
+            
+            try {{
+                const response = await fetch('/archon/status');
+                const result = await response.json();
+                
+                statusDiv.innerHTML = '<pre style="text-align: left; background: rgba(0,0,0,0.3); padding: 15px; border-radius: 5px;">' + 
+                    JSON.stringify(result, null, 2) + '</pre>';
+            }} catch (error) {{
+                statusDiv.innerHTML = '<p style="color: #f44336;">❌ Status check failed: ' + error.message + '</p>';
+            }}
+        }}
+    </script>
+</body>
+</html>
+        """)
+    
+    @app.get("/archon/status")
+    async def archon_status_fallback():
+        """Fallback status when Real Archon integration fails"""
+        return {
+            "status": "setup_required",
+            "real_archon_available": REAL_ARCHON_AVAILABLE,
+            "error": "Real Archon integration failed to load",
+            "repository": "https://github.com/coleam00/Archon",
+            "version": "v6-tool-library-integration"
+        }
 
 # ADD MONITORING SETUP AFTER APP CREATION
 # Initialize Prometheus metrics
@@ -219,7 +367,7 @@ class StudioRequest(BaseModel):
 @app.get("/health")
 async def health_check():
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "real_archon_integrated" if archon_integrator else "unavailable"
+    archon_status = "real_archon_integrated" if archon_integrator else "setup_required"
     
     return {
         "status": "healthy", 
@@ -515,20 +663,20 @@ print("Basic crew endpoint defined")
 @app.get("/")
 async def root():
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "real_archon_integrated" if archon_integrator else "unavailable"
+    archon_status = "real_archon_integrated" if archon_integrator else "setup_required"
     
     endpoints = {
         "health": "/health",
         "run_crew": "/run-crew", 
         "studio_api": "/studio/run",
+        "archon_interface": "/archon",
+        "archon_status": "/archon/status",
         "api_docs": "/docs"
     }
     
     # Add Real Archon endpoints if available
     if archon_integrator:
         endpoints.update({
-            "archon_interface": "/archon",
-            "archon_status": "/archon/status",
             "archon_setup": "/archon/setup",
             "archon_start": "/archon/start",
             "archon_stop": "/archon/stop"
@@ -549,7 +697,7 @@ async def root():
             "repository": "https://github.com/coleam00/Archon",
             "version": "v6-tool-library-integration",
             "description": "The world's first 'Agenteer' - an AI agent that builds other AI agents"
-        } if archon_integrator else None
+        }
     }
 
 if __name__ == "__main__":
@@ -559,11 +707,13 @@ if __name__ == "__main__":
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
         print(f"Lakera Guard ready: {getattr(lakera_guard, 'available', False) if lakera_guard else False}")
-        print(f"Real Archon integration: {'Active' if archon_integrator else 'Inactive'}")
+        print(f"Real Archon integration: {'Active' if archon_integrator else 'Setup Required'}")
         if archon_integrator:
             print(f"🏛️ Real Archon will be available at: http://localhost:{port}/archon")
-            print(f"📚 Repository: https://github.com/coleam00/Archon")
-            print(f"🎯 Version: v6-tool-library-integration")
+        else:
+            print(f"🔧 Archon setup page available at: http://localhost:{port}/archon")
+        print(f"📚 Repository: https://github.com/coleam00/Archon")
+        print(f"🎯 Version: v6-tool-library-integration")
         print("Initializing uvicorn...")
         uvicorn.run(app, host="0.0.0.0", port=port)
     except Exception as e:
