@@ -24,14 +24,14 @@ except Exception as e:
     MEMORY_AVAILABLE = False
     get_memory_manager = lambda: None
 
-# Add Archon integration import
+# Add simplified Archon web interface import
 try:
-    from archon_integration import setup_archon_integration
-    ARCHON_INTEGRATION_AVAILABLE = True
-    print("SUCCESS: Archon integration imported successfully")
+    from archon_web import archon_web_setup
+    ARCHON_WEB_AVAILABLE = True
+    print("SUCCESS: Archon web interface imported successfully")
 except Exception as e:
-    print(f"WARNING: Could not import Archon integration: {e}")
-    ARCHON_INTEGRATION_AVAILABLE = False
+    print(f"WARNING: Could not import Archon web interface: {e}")
+    ARCHON_WEB_AVAILABLE = False
 
 import time
 import uuid
@@ -66,17 +66,15 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="CrewAI Studio API with Archon MCP", version="1.0.0")
 print("FastAPI app created successfully")
 
-# Initialize Archon integration
-if ARCHON_INTEGRATION_AVAILABLE:
+# Initialize simplified Archon web interface
+if ARCHON_WEB_AVAILABLE:
     try:
-        archon_integrator = setup_archon_integration(app)
-        if archon_integrator:
-            print("🏛️ Archon MCP integration activated")
+        archon_web_setup(app)
+        print("🏛️ Archon web interface activated")
     except Exception as e:
-        print(f"Failed to activate Archon integration: {e}")
-        archon_integrator = None
+        print(f"Failed to activate Archon web interface: {e}")
 else:
-    archon_integrator = None
+    print("Archon web interface not available")
 
 # ADD MONITORING SETUP AFTER APP CREATION
 # Initialize Prometheus metrics
@@ -336,60 +334,6 @@ except Exception as e:
     print(f"Failed to initialize knowledge manager: {e}")
     knowledge_manager = None
 
-# ADD PLUGIN AGENT LOADER CLASS
-class AgentLoader:
-    """Dynamic agent plugin loader"""
-    
-    def __init__(self):
-        self.agents = {}
-        self.load_all_agents()
-    
-    def load_all_agents(self):
-        """Auto-discover and load all agent plugins"""
-        agents_dir = Path("plugins/agents")
-        
-        # Create plugins directory if it doesn't exist
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not agents_dir.exists():
-            print("Plugins directory not found, creating...")
-            return
-            
-        for file in agents_dir.glob("*.py"):
-            if file.name.startswith("__"):
-                continue
-                
-            module_name = f"plugins.agents.{file.stem}"
-            try:
-                module = importlib.import_module(module_name)
-                if hasattr(module, 'AGENT_CLASS') and hasattr(module, 'AGENT_NAME'):
-                    self.agents[module.AGENT_NAME] = module.AGENT_CLASS
-                    print(f"Loaded agent: {module.AGENT_NAME}")
-            except Exception as e:
-                print(f"Failed to load agent from {file}: {e}")
-    
-    def get_agent_class(self, name: str):
-        """Get agent class by name"""
-        return self.agents.get(name)
-    
-    def list_agents(self):
-        """List all available agents"""
-        return list(self.agents.keys())
-    
-    def reload_agents(self):
-        """Reload all agents (for development)"""
-        self.agents.clear()
-        self.load_all_agents()
-
-# Initialize Agent Loader
-print("Initializing Agent Loader...")
-try:
-    agent_loader = AgentLoader()
-    print(f"Agent loader initialized with {len(agent_loader.agents)} agents")
-except Exception as e:
-    print(f"Failed to initialize agent loader: {e}")
-    agent_loader = None
-
 # ADD HELPER FUNCTIONS
 def record_task_metrics(task_type: str, role: str, status: str, duration: float, endpoint: str = "unknown"):
     """Record task execution metrics"""
@@ -463,31 +407,11 @@ class StudioRequest(BaseModel):
     expected_output: str
     llm_model: Optional[str] = "gpt-3.5-turbo"
 
-# NEW PINECONE MODELS
-class CourseUploadRequest(BaseModel):
-    course_name: str
-    file_name: str
-    content: str
-    section: Optional[str] = None
-
-class KnowledgeSearchRequest(BaseModel):
-    query: str
-    course_filter: Optional[str] = None
-    limit: Optional[int] = 5
-
-# ADD PLUGIN AGENT MODEL
-class AgentExecuteRequest(BaseModel):
-    task_description: str
-    context_data: Optional[Dict[str, Any]] = None
-    source_info: Optional[Dict[str, Any]] = None
-    llm_model: Optional[str] = "gpt-4"
-
 # Health check endpoint - ENHANCED WITH ARCHON STATUS
 @app.get("/health")
 async def health_check():
-    pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "available" if archon_integrator else "unavailable"
+    archon_status = "web_interface_active" if ARCHON_WEB_AVAILABLE else "unavailable"
     
     return {
         "status": "healthy", 
@@ -500,20 +424,212 @@ async def health_check():
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
             "monitoring_dashboard": True,
-            "pinecone_knowledge": pinecone_status,
             "lakera_security": lakera_status,
-            "plugin_agents": len(agent_loader.agents) if agent_loader else 0,
             "archon_mcp": archon_status
         }
     }
 
 print("Health endpoint defined")
 
-# Original CrewAI endpoint (keep for backward compatibility) - ENHANCED WITH MONITORING AND LAKERA GUARD
+# Studio API endpoint with memory integration and Lakera Guard protection
+@app.post("/studio/run")
+async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredentials = Depends(security)):
+    """Studio endpoint with memory integration and Lakera Guard security"""
+    # Manual authentication check
+    correct_username = secrets.compare_digest(
+        credentials.username, 
+        os.getenv("STUDIO_USERNAME", "admin")
+    )
+    correct_password = secrets.compare_digest(
+        credentials.password, 
+        os.getenv("STUDIO_PASSWORD", "changeme123")
+    )
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    start_time_request = time.time()
+    active_tasks.inc()
+    session_id = str(uuid.uuid4())
+    memory_manager_instance = get_memory_manager() if MEMORY_AVAILABLE else None
+    
+    try:
+        # SCREEN INPUT WITH LAKERA GUARD
+        if lakera_guard and lakera_guard.available:
+            guard_result = lakera_guard.screen_content(request.task_description)
+            
+            if guard_result.get("flagged"):
+                active_tasks.dec()
+                record_task_metrics(request.task_description[:50], request.agent_role, 'blocked_by_security', 
+                                  time.time() - start_time_request, 'studio-run')
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Task description blocked by security policy. Detected threats: {guard_result.get('categories', [])}"
+                )
+        
+        # Save task start to memory
+        if memory_manager_instance:
+            memory_manager_instance.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=f"Starting task: {request.task_description}",
+                memory_type="task_start",
+                session_id=session_id
+            )
+
+        # Get previous knowledge for this agent type
+        agent_knowledge = []
+        if memory_manager_instance:
+            knowledge = memory_manager_instance.get_agent_knowledge(request.agent_name)
+            agent_knowledge = [k["knowledge_content"] for k in knowledge[:3]]
+
+        # Get course knowledge context
+        course_knowledge_context = ""
+        if knowledge_manager and knowledge_manager.available:
+            course_knowledge_context = knowledge_manager.get_agent_context(
+                request.task_description,
+                request.agent_role,
+                max_context=3
+            )
+
+        # Enhanced backstory with both memory and course knowledge
+        backstory = f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}"
+        
+        if agent_knowledge:
+            backstory += f"\n\nYour previous knowledge includes:\n" + "\n".join(f"- {k}" for k in agent_knowledge)
+        
+        if course_knowledge_context:
+            backstory += f"\n\nYou have access to comprehensive course materials and knowledge base:\n{course_knowledge_context}"
+
+        # Get appropriate LLM for the task
+        from crewai.llm import LLM
+        llm = LLM(
+            model=request.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
+        
+        # Create agent with enhanced backstory
+        agent = Agent(
+            role=request.agent_role,
+            goal=request.agent_goal,
+            backstory=backstory,
+            llm=llm,
+            verbose=True
+        )
+        
+        # Create task with expected output
+        task = Task(
+            description=request.task_description,
+            agent=agent,
+            expected_output=request.expected_output
+        )
+        
+        # Create and run crew
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            verbose=True
+        )
+        
+        result = crew.kickoff()
+        execution_time = int((time.time() - start_time_request) * 1000)
+
+        # SCREEN OUTPUT WITH LAKERA GUARD
+        output_blocked = False
+        if lakera_guard and lakera_guard.available:
+            output_guard = lakera_guard.screen_content("", str(result))
+            if output_guard.get("flagged"):
+                output_blocked = True
+                result = f"Response blocked by security policy. Detected threats: {output_guard.get('categories', [])}"
+
+        # Save results to memory
+        if memory_manager_instance:
+            # Save task result
+            memory_manager_instance.save_agent_memory(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                content=str(result),
+                memory_type="task_result",
+                session_id=session_id,
+                metadata={"task": request.task_description, "model": request.llm_model}
+            )
+            
+            # Log execution
+            memory_manager_instance.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output=str(result),
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=True
+            )
+
+        # Record success metrics
+        duration = time.time() - start_time_request
+        record_task_metrics(request.task_description[:50], request.agent_role, 'success', duration, 'studio-run')
+        active_tasks.dec()
+
+        return {
+            "success": True,
+            "result": str(result),
+            "agent_name": request.agent_name,
+            "agent_role": request.agent_role,
+            "model_used": request.llm_model,
+            "execution_details": {
+                "task_completed": True,
+                "expected_output_met": True,
+                "execution_time_ms": execution_time,
+                "session_id": session_id,
+                "memory_saved": memory_manager_instance is not None,
+                "knowledge_enhanced": bool(course_knowledge_context)
+            },
+            "security_screening": {
+                "input_blocked": False,
+                "output_blocked": output_blocked,
+                "lakera_enabled": lakera_guard and lakera_guard.available
+            }
+        }
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (like security blocks)
+    except Exception as e:
+        execution_time = int((time.time() - start_time_request) * 1000)
+        
+        # Log error to memory
+        if memory_manager_instance:
+            memory_manager_instance.log_task_execution(
+                agent_name=request.agent_name,
+                agent_role=request.agent_role,  
+                task_description=request.task_description,
+                expected_output=request.expected_output,
+                actual_output="",
+                execution_time_ms=execution_time,
+                model_used=request.llm_model,
+                success=False,
+                error_message=str(e)
+            )
+
+        # Record error metrics
+        duration = time.time() - start_time_request
+        record_task_metrics(request.task_description[:50], request.agent_role, 'error', duration, 'studio-run')
+        active_tasks.dec()
+
+        logger.error(f"Error in studio run: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error executing studio crew: {str(e)}")
+
+print("Studio endpoint defined")
+
+# Original CrewAI endpoint (keep for backward compatibility)
 @app.post("/run-crew")
 async def run_crew(request: CrewRequest):
     request_start_time = time.time()
-    active_tasks.inc()  # Increment active task counter
+    active_tasks.inc()
     
     try:
         # SCREEN INPUT WITH LAKERA GUARD
@@ -588,9 +704,8 @@ async def run_crew(request: CrewRequest):
         }
         
     except HTTPException:
-        raise  # Re-raise HTTP exceptions (like security blocks)
+        raise
     except Exception as e:
-        # Record error metrics
         duration = time.time() - request_start_time
         record_task_metrics(request.description[:50] if hasattr(request, 'description') else 'unknown', 
                           request.role if hasattr(request, 'role') else 'unknown', 
@@ -605,26 +720,21 @@ print("Basic crew endpoint defined")
 # Root endpoint - ENHANCED WITH ARCHON STATUS
 @app.get("/")
 async def root():
-    pinecone_status = "available" if (knowledge_manager and knowledge_manager.available) else "unavailable"
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "integrated" if archon_integrator else "unavailable"
+    archon_status = "web_interface_active" if ARCHON_WEB_AVAILABLE else "unavailable"
     
     endpoints = {
         "health": "/health",
         "run_crew": "/run-crew", 
-        "monitoring_dashboard": "/dashboard",
-        "prometheus_metrics": "/metrics",
+        "studio_api": "/studio/run",
         "api_docs": "/docs"
     }
     
     # Add Archon endpoints if available
-    if archon_integrator:
+    if ARCHON_WEB_AVAILABLE:
         endpoints.update({
             "archon_interface": "/archon",
-            "archon_status": "/archon/status",
-            "archon_start": "/archon/start",
-            "archon_stop": "/archon/stop",
-            "archon_health": "/health/archon"
+            "archon_status": "/archon/status"
         })
     
     return {
@@ -634,28 +744,21 @@ async def root():
         "features": {
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
-            "monitoring_dashboard": True,
-            "pinecone_knowledge": pinecone_status,
             "lakera_security": lakera_status,
-            "plugin_agents": len(agent_loader.agents) if agent_loader else 0,
-            "archon_mcp_integration": archon_status,
+            "archon_mcp_web_interface": archon_status,
             "docker_deployment": True
         }
     }
 
 if __name__ == "__main__":
     try:
-        print("Starting CrewAI Studio API with Archon MCP Integration...")
+        print("Starting CrewAI Studio API with Archon MCP Web Interface...")
         port = int(os.getenv("PORT", 8000))
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
-        print(f"Pinecone available: {PINECONE_AVAILABLE}")
-        print(f"Knowledge manager ready: {getattr(knowledge_manager, 'available', False) if knowledge_manager else False}")
         print(f"Lakera Guard ready: {getattr(lakera_guard, 'available', False) if lakera_guard else False}")
-        print(f"Plugin agents loaded: {len(agent_loader.agents) if agent_loader else 0}")
-        print(f"Archon MCP integration: {'Active' if archon_integrator else 'Inactive'}")
-        print(f"Dashboard will be available at: http://localhost:{port}/dashboard")
-        if archon_integrator:
+        print(f"Archon Web Interface: {'Active' if ARCHON_WEB_AVAILABLE else 'Inactive'}")
+        if ARCHON_WEB_AVAILABLE:
             print(f"🏛️ Archon MCP will be available at: http://localhost:{port}/archon")
         print("Initializing uvicorn...")
         uvicorn.run(app, host="0.0.0.0", port=port)
