@@ -5,7 +5,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -14,10 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create necessary directories for Studio UI (safe addition)
+# Create necessary directories for Studio UI
 RUN mkdir -p static templates studio
 
 EXPOSE 8000
 
-# Use main.py directly - it now has Real Archon integration built-in
 CMD ["python", "main.py"]
