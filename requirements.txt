@@ -16,3 +16,13 @@ anthropic
 mcp
 websockets
 aiofiles
+langgraph
+langchain
+langchain-community
+langchain-openai
+langchain-anthropic
+pydantic-ai
+beautifulsoup4
+lxml
+nest-asyncio
+tiktoken
