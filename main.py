@@ -24,15 +24,6 @@ except Exception as e:
     MEMORY_AVAILABLE = False
     get_memory_manager = lambda: None
 
-# Add simplified Archon web interface import
-try:
-    from archon_web import archon_web_setup
-    ARCHON_WEB_AVAILABLE = True
-    print("SUCCESS: Archon web interface imported successfully")
-except Exception as e:
-    print(f"WARNING: Could not import Archon web interface: {e}")
-    ARCHON_WEB_AVAILABLE = False
-
 import time
 import uuid
 
@@ -41,23 +32,9 @@ import psutil
 from datetime import datetime, timedelta
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
-# ADD PINECONE IMPORTS
-try:
-    from pinecone import Pinecone, ServerlessSpec
-    import openai
-    PINECONE_AVAILABLE = True
-    print("SUCCESS: Pinecone imported successfully")
-except Exception as e:
-    print(f"WARNING: Could not import Pinecone: {e}")
-    PINECONE_AVAILABLE = False
-
 # ADD LAKERA GUARD IMPORTS
 import requests
 import json
-
-# ADD PLUGIN SYSTEM IMPORTS
-import importlib
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,16 +42,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CrewAI Studio API with Archon MCP", version="1.0.0")
 print("FastAPI app created successfully")
-
-# Initialize simplified Archon web interface
-if ARCHON_WEB_AVAILABLE:
-    try:
-        archon_web_setup(app)
-        print("🏛️ Archon web interface activated")
-    except Exception as e:
-        print(f"Failed to activate Archon web interface: {e}")
-else:
-    print("Archon web interface not available")
 
 # ADD MONITORING SETUP AFTER APP CREATION
 # Initialize Prometheus metrics
@@ -154,186 +121,6 @@ except Exception as e:
     print(f"Failed to initialize Lakera Guard: {e}")
     lakera_guard = None
 
-# ADD PINECONE KNOWLEDGE MANAGER
-class CourseKnowledgeManager:
-    """Manages course knowledge storage and retrieval via Pinecone"""
-    
-    def __init__(self):
-        self.available = False  # Initialize available attribute first
-        
-        if not PINECONE_AVAILABLE:
-            print("WARNING: Pinecone not available, knowledge features disabled")
-            return
-            
-        try:
-            # Initialize Pinecone
-            self.pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-            self.index_name = "crewai-course-knowledge"
-            self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            
-            # Create index if it doesn't exist
-            self._ensure_index_exists()
-            self.index = self.pc.Index(self.index_name)
-            self.available = True
-            print("Pinecone CourseKnowledgeManager initialized successfully")
-        except Exception as e:
-            print(f"ERROR initializing Pinecone: {e}")
-            self.available = False
-    
-    def _ensure_index_exists(self):
-        """Create Pinecone index if it doesn't exist"""
-        try:
-            existing_indexes = [index.name for index in self.pc.list_indexes()]
-            
-            if self.index_name not in existing_indexes:
-                self.pc.create_index(
-                    name=self.index_name,
-                    dimension=1536,  # OpenAI ada-002 embedding dimension
-                    metric="cosine",
-                    spec=ServerlessSpec(
-                        cloud="aws",
-                        region="us-east-1"
-                    )
-                )
-                print(f"Created Pinecone index: {self.index_name}")
-                time.sleep(10)  # Wait for index to be ready
-        except Exception as e:
-            print(f"Error ensuring index exists: {e}")
-            raise
-    
-    def embed_text(self, text: str) -> List[float]:
-        """Generate embeddings using OpenAI"""
-        if not self.available:
-            return []
-        try:
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"Error generating embedding: {e}")
-            return []
-    
-    def store_course_content(self, 
-                           content: str, 
-                           course_name: str,
-                           section: str,
-                           metadata: Dict[str, Any] = None) -> str:
-        """Store course content in Pinecone"""
-        if not self.available:
-            return "pinecone_unavailable"
-            
-        try:
-            # Generate embedding
-            embedding = self.embed_text(content)
-            if not embedding:
-                return "embedding_failed"
-            
-            # Prepare metadata
-            vector_metadata = {
-                "course_name": course_name,
-                "section": section,
-                "content": content[:1000],  # Store partial content in metadata
-                "content_length": len(content),
-                "timestamp": str(datetime.now())
-            }
-            
-            if metadata:
-                vector_metadata.update(metadata)
-            
-            # Generate unique ID
-            vector_id = f"{course_name}_{section}_{hash(content[:100])}"
-            
-            # Store in Pinecone
-            self.index.upsert([(vector_id, embedding, vector_metadata)])
-            
-            return vector_id
-        except Exception as e:
-            print(f"Error storing course content: {e}")
-            return "storage_failed"
-    
-    def search_knowledge(self, 
-                        query: str, 
-                        course_filter: str = None,
-                        top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant course knowledge"""
-        if not self.available:
-            return []
-            
-        try:
-            # Generate query embedding
-            query_embedding = self.embed_text(query)
-            if not query_embedding:
-                return []
-            
-            # Build filter
-            filter_dict = {}
-            if course_filter:
-                filter_dict["course_name"] = course_filter
-            
-            # Search Pinecone
-            results = self.index.query(
-                vector=query_embedding,
-                top_k=top_k,
-                include_metadata=True,
-                filter=filter_dict if filter_dict else None
-            )
-            
-            # Format results
-            knowledge_chunks = []
-            for match in results.matches:
-                knowledge_chunks.append({
-                    "content": match.metadata.get("content", ""),
-                    "course": match.metadata.get("course_name", ""),
-                    "section": match.metadata.get("section", ""),
-                    "relevance_score": match.score,
-                    "id": match.id
-                })
-            
-            return knowledge_chunks
-        except Exception as e:
-            print(f"Error searching knowledge: {e}")
-            return []
-    
-    def get_agent_context(self, 
-                         task_description: str, 
-                         agent_role: str,
-                         max_context: int = 3) -> str:
-        """Get relevant context for CrewAI agents"""
-        if not self.available:
-            return ""
-            
-        try:
-            # Create search query combining task and role
-            search_query = f"{agent_role}: {task_description}"
-            
-            # Search for relevant knowledge
-            knowledge = self.search_knowledge(search_query, top_k=max_context)
-            
-            if not knowledge:
-                return ""
-            
-            # Format context for agent
-            context_parts = []
-            for item in knowledge:
-                context_parts.append(
-                    f"[{item['course']} - {item['section']}]: {item['content']}"
-                )
-            
-            return "\n\nRelevant Course Knowledge:\n" + "\n\n".join(context_parts)
-        except Exception as e:
-            print(f"Error getting agent context: {e}")
-            return ""
-
-# Initialize global knowledge manager
-try:
-    knowledge_manager = CourseKnowledgeManager()
-    print("Global knowledge manager initialized")
-except Exception as e:
-    print(f"Failed to initialize knowledge manager: {e}")
-    knowledge_manager = None
-
 # ADD HELPER FUNCTIONS
 def record_task_metrics(task_type: str, role: str, status: str, duration: float, endpoint: str = "unknown"):
     """Record task execution metrics"""
@@ -407,11 +194,496 @@ class StudioRequest(BaseModel):
     expected_output: str
     llm_model: Optional[str] = "gpt-3.5-turbo"
 
+# ARCHON WEB INTERFACE - EMBEDDED DIRECTLY
+@app.get("/archon", response_class=HTMLResponse)
+async def archon_interface():
+    """Archon Agent Builder Web Interface - Embedded directly"""
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏛️ Archon - AI Agent Builder</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 30px 0;
+        }
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        .card h2 {
+            margin-bottom: 20px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+            font-size: 16px;
+        }
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        .btn {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .agent-list {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        .agent-item {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4CAF50;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .agent-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: translateX(5px);
+        }
+        .agent-item h4 {
+            margin-bottom: 5px;
+        }
+        .agent-item p {
+            opacity: 0.8;
+            font-size: 0.9rem;
+        }
+        .chat-container {
+            grid-column: 1 / -1;
+            max-height: 400px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+        }
+        .chat-message {
+            margin-bottom: 15px;
+            padding: 10px 15px;
+            border-radius: 15px;
+            max-width: 80%;
+        }
+        .chat-message.user {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            margin-left: auto;
+            text-align: right;
+        }
+        .chat-message.assistant {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+            opacity: 0.8;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #4CAF50;
+            animation: pulse 2s infinite;
+            margin-right: 10px;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
+        }
+        .success-msg {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid #4CAF50;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .error-msg {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid #f44336;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏛️ Archon</h1>
+            <p>AI Agent Builder & MCP Interface</p>
+            <div class="status-indicator"></div>
+            <span>Connected to CrewAI Studio</span>
+        </div>
+
+        <div id="successMsg" class="success-msg"></div>
+        <div id="errorMsg" class="error-msg"></div>
+
+        <div class="main-grid">
+            <!-- Agent Creation Form -->
+            <div class="card">
+                <h2>🤖 Create AI Agent</h2>
+                <form id="agentForm">
+                    <div class="form-group">
+                        <label for="agentName">Agent Name</label>
+                        <input type="text" id="agentName" name="agentName" placeholder="e.g., ResearchBot" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="agentRole">Agent Role</label>
+                        <input type="text" id="agentRole" name="agentRole" placeholder="e.g., Research Assistant" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="agentGoal">Agent Goal</label>
+                        <textarea id="agentGoal" name="agentGoal" placeholder="What is this agent's primary objective?" required></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="llmModel">LLM Model</label>
+                        <select id="llmModel" name="llmModel">
+                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                            <option value="gpt-4">GPT-4</option>
+                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                        </select>
+                    </div>
+                    
+                    <button type="submit" class="btn" id="createBtn">Create & Test Agent</button>
+                </form>
+            </div>
+
+            <!-- Agent Management -->
+            <div class="card">
+                <h2>🎯 Created Agents</h2>
+                <div id="agentList">
+                    <div class="loading">No agents created yet. Create your first agent!</div>
+                </div>
+            </div>
+
+            <!-- Chat Interface -->
+            <div class="card chat-container">
+                <h2>💬 Chat with Agent</h2>
+                <div id="chatMessages">
+                    <div class="loading">Create an agent to start testing</div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <div class="form-group">
+                        <input type="text" id="chatInput" placeholder="Type your message..." disabled>
+                    </div>
+                    <button class="btn" onclick="sendMessage()" id="sendBtn" disabled>Send Message</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let agents = [];
+        let selectedAgent = null;
+        let chatHistory = [];
+
+        function showMessage(text, type = 'success') {
+            const msgEl = document.getElementById(type === 'success' ? 'successMsg' : 'errorMsg');
+            msgEl.textContent = text;
+            msgEl.style.display = 'block';
+            setTimeout(() => { msgEl.style.display = 'none'; }, 5000);
+        }
+
+        // Create and Test Agent
+        document.getElementById('agentForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const agentData = {
+                agent_name: formData.get('agentName'),
+                agent_role: formData.get('agentRole'),
+                agent_goal: formData.get('agentGoal'),
+                task_description: `Hello, I am testing you. Please introduce yourself and explain what you can help with.`,
+                expected_output: "A friendly introduction explaining your role and capabilities",
+                llm_model: formData.get('llmModel')
+            };
+
+            const createBtn = document.getElementById('createBtn');
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating & Testing...';
+
+            try {
+                const response = await fetch('/studio/run', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + btoa('admin:changeme123')
+                    },
+                    body: JSON.stringify(agentData)
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    
+                    // Add agent to list
+                    const agent = {
+                        name: agentData.agent_name,
+                        role: agentData.agent_role,
+                        goal: agentData.agent_goal,
+                        model: agentData.llm_model,
+                        created: new Date().toLocaleString(),
+                        firstResponse: result.result
+                    };
+                    
+                    agents.push(agent);
+                    updateAgentList();
+                    
+                    // Auto-select and show test result
+                    selectAgent(agents.length - 1);
+                    chatHistory = [
+                        { type: 'user', content: 'Hello, please introduce yourself.' },
+                        { type: 'assistant', content: result.result }
+                    ];
+                    updateChatInterface();
+                    
+                    e.target.reset();
+                    showMessage(`Agent "${agent.name}" created and tested successfully!`, 'success');
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to create agent');
+                }
+            } catch (error) {
+                console.error('Error creating agent:', error);
+                showMessage(`Failed to create agent: ${error.message}`, 'error');
+            } finally {
+                createBtn.disabled = false;
+                createBtn.textContent = 'Create & Test Agent';
+            }
+        });
+
+        // Update Agent List
+        function updateAgentList() {
+            const agentList = document.getElementById('agentList');
+            
+            if (agents.length === 0) {
+                agentList.innerHTML = '<div class="loading">No agents created yet. Create your first agent!</div>';
+                return;
+            }
+
+            agentList.innerHTML = agents.map((agent, index) => `
+                <div class="agent-item" onclick="selectAgent(${index})" ${selectedAgent === agent ? 'style="background: rgba(76, 175, 80, 0.2);"' : ''}>
+                    <h4>🤖 ${agent.name}</h4>
+                    <p><strong>Role:</strong> ${agent.role}</p>
+                    <p><strong>Model:</strong> ${agent.model}</p>
+                    <p><strong>Created:</strong> ${agent.created}</p>
+                </div>
+            `).join('');
+        }
+
+        // Select Agent
+        function selectAgent(index) {
+            selectedAgent = agents[index];
+            updateAgentList(); // Refresh to show selection
+            
+            // Show agent's first response if available
+            if (selectedAgent.firstResponse) {
+                chatHistory = [
+                    { type: 'user', content: 'Hello, please introduce yourself.' },
+                    { type: 'assistant', content: selectedAgent.firstResponse }
+                ];
+            } else {
+                chatHistory = [];
+            }
+            
+            updateChatInterface();
+            
+            document.getElementById('chatInput').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            
+            showMessage(`Selected agent: ${selectedAgent.name}`, 'success');
+        }
+
+        // Send Message
+        async function sendMessage() {
+            const chatInput = document.getElementById('chatInput');
+            const message = chatInput.value.trim();
+            
+            if (!message || !selectedAgent) return;
+
+            chatHistory.push({ type: 'user', content: message });
+            updateChatInterface();
+            chatInput.value = '';
+
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Agent is thinking...';
+
+            try {
+                const response = await fetch('/studio/run', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + btoa('admin:changeme123')
+                    },
+                    body: JSON.stringify({
+                        agent_name: selectedAgent.name,
+                        agent_role: selectedAgent.role,
+                        agent_goal: selectedAgent.goal,
+                        task_description: message,
+                        expected_output: "A helpful response to the user's message",
+                        llm_model: selectedAgent.model
+                    })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    chatHistory.push({ type: 'assistant', content: result.result });
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to get response');
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                chatHistory.push({ type: 'assistant', content: 'Sorry, I encountered an error. Please try again.' });
+            } finally {
+                updateChatInterface();
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send Message';
+            }
+        }
+
+        // Update Chat Interface
+        function updateChatInterface() {
+            const chatMessages = document.getElementById('chatMessages');
+            
+            if (chatHistory.length === 0) {
+                chatMessages.innerHTML = selectedAgent 
+                    ? `<div class="loading">Start chatting with ${selectedAgent.name}</div>`
+                    : '<div class="loading">Create an agent to start testing</div>';
+                return;
+            }
+
+            chatMessages.innerHTML = chatHistory.map(msg => `
+                <div class="chat-message ${msg.type}">
+                    ${msg.content}
+                </div>
+            `).join('');
+            
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Enter key support for chat
+        document.getElementById('chatInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Initialize
+        updateAgentList();
+        updateChatInterface();
+    </script>
+</body>
+</html>
+    """)
+
+@app.get("/archon/status")
+async def archon_status():
+    """Check Archon status"""
+    return {
+        "status": "active",
+        "type": "embedded_web_interface",
+        "message": "Archon web interface is running",
+        "endpoints": {
+            "interface": "/archon",
+            "status": "/archon/status"
+        }
+    }
+
 # Health check endpoint - ENHANCED WITH ARCHON STATUS
 @app.get("/health")
 async def health_check():
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "web_interface_active" if ARCHON_WEB_AVAILABLE else "unavailable"
     
     return {
         "status": "healthy", 
@@ -423,9 +695,8 @@ async def health_check():
         "features": {
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
-            "monitoring_dashboard": True,
             "lakera_security": lakera_status,
-            "archon_mcp": archon_status
+            "archon_mcp": "embedded_web_interface_active"
         }
     }
 
@@ -487,23 +758,11 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
             knowledge = memory_manager_instance.get_agent_knowledge(request.agent_name)
             agent_knowledge = [k["knowledge_content"] for k in knowledge[:3]]
 
-        # Get course knowledge context
-        course_knowledge_context = ""
-        if knowledge_manager and knowledge_manager.available:
-            course_knowledge_context = knowledge_manager.get_agent_context(
-                request.task_description,
-                request.agent_role,
-                max_context=3
-            )
-
-        # Enhanced backstory with both memory and course knowledge
+        # Enhanced backstory with memory
         backstory = f"You are {request.agent_name}, a {request.agent_role}. Your goal is: {request.agent_goal}"
         
         if agent_knowledge:
             backstory += f"\n\nYour previous knowledge includes:\n" + "\n".join(f"- {k}" for k in agent_knowledge)
-        
-        if course_knowledge_context:
-            backstory += f"\n\nYou have access to comprehensive course materials and knowledge base:\n{course_knowledge_context}"
 
         # Get appropriate LLM for the task
         from crewai.llm import LLM
@@ -586,8 +845,7 @@ async def run_studio_crew(request: StudioRequest, credentials: HTTPBasicCredenti
                 "expected_output_met": True,
                 "execution_time_ms": execution_time,
                 "session_id": session_id,
-                "memory_saved": memory_manager_instance is not None,
-                "knowledge_enhanced": bool(course_knowledge_context)
+                "memory_saved": memory_manager_instance is not None
             },
             "security_screening": {
                 "input_blocked": False,
@@ -721,21 +979,15 @@ print("Basic crew endpoint defined")
 @app.get("/")
 async def root():
     lakera_status = "available" if (lakera_guard and lakera_guard.available) else "unavailable"
-    archon_status = "web_interface_active" if ARCHON_WEB_AVAILABLE else "unavailable"
     
     endpoints = {
         "health": "/health",
         "run_crew": "/run-crew", 
         "studio_api": "/studio/run",
+        "archon_interface": "/archon",
+        "archon_status": "/archon/status",
         "api_docs": "/docs"
     }
-    
-    # Add Archon endpoints if available
-    if ARCHON_WEB_AVAILABLE:
-        endpoints.update({
-            "archon_interface": "/archon",
-            "archon_status": "/archon/status"
-        })
     
     return {
         "message": "CrewAI Studio API with Archon MCP Integration is running on Render!",
@@ -745,21 +997,19 @@ async def root():
             "visual_studio": templates is not None,
             "memory_system": MEMORY_AVAILABLE,
             "lakera_security": lakera_status,
-            "archon_mcp_web_interface": archon_status,
+            "archon_mcp_web_interface": "embedded_active",
             "docker_deployment": True
         }
     }
 
 if __name__ == "__main__":
     try:
-        print("Starting CrewAI Studio API with Archon MCP Web Interface...")
+        print("Starting CrewAI Studio API with Embedded Archon MCP Interface...")
         port = int(os.getenv("PORT", 8000))
         print(f"Port: {port}")
         print(f"Memory available: {MEMORY_AVAILABLE}")
         print(f"Lakera Guard ready: {getattr(lakera_guard, 'available', False) if lakera_guard else False}")
-        print(f"Archon Web Interface: {'Active' if ARCHON_WEB_AVAILABLE else 'Inactive'}")
-        if ARCHON_WEB_AVAILABLE:
-            print(f"🏛️ Archon MCP will be available at: http://localhost:{port}/archon")
+        print(f"🏛️ Archon MCP embedded interface will be available at: http://localhost:{port}/archon")
         print("Initializing uvicorn...")
         uvicorn.run(app, host="0.0.0.0", port=port)
     except Exception as e:
