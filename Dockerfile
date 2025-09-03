@@ -18,5 +18,5 @@ RUN mkdir -p static templates studio
 
 EXPOSE 8000
 
-# Back to the original working command
+# Use main.py directly - it now has Archon integration built-in
 CMD ["python", "main.py"]
