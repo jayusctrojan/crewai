@@ -10,3 +10,11 @@ psutil
 pinecone
 openai
 requests
+streamlit
+pydantic
+anthropic
+mcp
+websockets
+asyncio
+concurrent-futures
+aiofiles
